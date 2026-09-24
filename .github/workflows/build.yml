@@ -1,0 +1,56 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # c++11 is the floor the client promises; the rest are what programs use.
+        std: ['c++11', 'c++17', 'c++20']
+        cxx: ['g++', 'clang++']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test (system curl)
+        run: make test CXX=${{ matrix.cxx }} STD=${{ matrix.std }}
+
+  linux-libcurl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install libcurl
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
+      - name: Test (TRACE_CLIENT_USE_LIBCURL)
+        run: make test-libcurl
+
+  linux-sanitizers:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        sanitize: ['thread', 'address,undefined']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test under -fsanitize=${{ matrix.sanitize }}
+        run: make test CXX=clang++ CXXFLAGS="-std=c++11 -g -pthread -fsanitize=${{ matrix.sanitize }}"
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test (system curl)
+        run: make test CXX=clang++
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (MSVC)
+        run: |
+          cmake -S . -B build
+          cmake --build build --config Release
+      - name: Test (system curl.exe)
+        run: build\Release\test_trace_client.exe
