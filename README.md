@@ -112,8 +112,9 @@ reports many events a second should use the libcurl transport.
 
 Under Emscripten (a browser build) there are no processes to spawn, so the
 client is always disabled there, with reason `"unavailable"` unless one of the
-opt-outs above applied first — nothing is lost, the desktop build reports. With `TRACE_CLIENT_USE_LIBCURL` the header
-also builds for platforms without `posix_spawn`.
+opt-outs above applied first — nothing is lost, the desktop build reports.
+With `TRACE_CLIENT_USE_LIBCURL` the header also builds for platforms without
+`posix_spawn`.
 
 ## Getting it
 
