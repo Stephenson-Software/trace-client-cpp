@@ -32,7 +32,7 @@ trace.close();
 | **Never throws** | Nothing in the client throws. A server that is down, slow, or rejecting the key — or a machine with no `curl` — is a dropped report, not an exception or a crash in your program. Drops are passed to the optional `Logger` (a `std::function<void(const std::string&)>`, last constructor argument), otherwise not mentioned at all. |
 | **Bounded** | At most 256 reports wait to be sent; past that, new ones are dropped. A trace server that is unreachable for a week costs a few kilobytes, not your memory. |
 | **`close()` drains** | Reports already queued get up to the client timeout (5 s total) to be sent before the thread stops, so a CLI that reports and exits at once does not lose its event. Still bounded: an unreachable server delays exit by at most the timeout — a request still in flight then is abandoned and its `curl` process killed. `close(seconds)` takes a shorter bound. Once `close()` returns, the `Logger` is never called again. |
-| **Fits the server's limits** | Names and tag keys/values are cut to 255 bytes (never mid-character), at most 32 tags are sent, blank tag keys are dropped, invalid UTF-8 becomes U+FFFD, and NaN or infinite values are left out — so a report is never rejected as a whole for one bad field. |
+| **Fits the server's limits** | Names and tag keys/values are cut to 255 bytes (never mid-character), at most 32 tags are sent, blank tag keys are dropped, invalid UTF-8 becomes U+FFFD, and NaN or infinite values are left out — so a report is never rejected as a whole for one bad field. A report whose name is empty or blank is not an event at all: it is ignored, without a mention to the `Logger`. |
 
 ## Turning it off
 
@@ -111,8 +111,8 @@ handful of events per session, which is what trace is for. A program that
 reports many events a second should use the libcurl transport.
 
 Under Emscripten (a browser build) there are no processes to spawn, so the
-client is always disabled there, with reason `"unavailable"` — nothing is
-lost, the desktop build reports. With `TRACE_CLIENT_USE_LIBCURL` the header
+client is always disabled there, with reason `"unavailable"` unless one of the
+opt-outs above applied first — nothing is lost, the desktop build reports. With `TRACE_CLIENT_USE_LIBCURL` the header
 also builds for platforms without `posix_spawn`.
 
 ## Getting it
@@ -154,8 +154,9 @@ make test            # system curl transport
 make test-libcurl    # the TRACE_CLIENT_USE_LIBCURL transport
 ```
 
-or, where there is no make (MSVC), `cmake -S . -B build && cmake --build build`
-and run `build/Release/test_trace_client`.
+or, where there is no make (MSVC),
+`cmake -S . -B build && cmake --build build --config Release` and run
+`build/Release/test_trace_client`.
 
 Tests run the client against a small HTTP server written with plain sockets
 on a loopback port — no more dependencies than the client itself — and never
