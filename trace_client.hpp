@@ -791,7 +791,7 @@ inline bool environmentOptsOut() {
  * way to send (REASON_UNAVAILABLE).
  *
  * Every event carries the program's own version as the tag "version" -- the
- * second argument to the constructor, required, so a "command" event can be
+ * third argument to the constructor, required, so a "command" event can be
  * tied to a release as well as a "startup" one. An event's own "version" tag
  * wins over it. It is trimmed; a blank one, or one longer than MAX_LENGTH
  * bytes, is treated like a blank base URL or application: nothing throws, the
