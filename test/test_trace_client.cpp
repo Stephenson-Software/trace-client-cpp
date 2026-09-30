@@ -245,7 +245,7 @@ static void cleanEnvironment() {
 
 static void reportPostsTheEventToTheMetricsEndpointWithTheKey() {
     StubServer server;
-    trace_client::TraceClient client(server.baseUrl(), "MyGame", "secret-key");
+    trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "secret-key");
     CHECK(client.isEnabled());
     client.report("startup");
     CHECK(server.waitFor(1, 10));
@@ -257,12 +257,12 @@ static void reportPostsTheEventToTheMetricsEndpointWithTheKey() {
     CHECK_EQ(std::string("/api/metrics"), got[0].path);
     CHECK_EQ(std::string("Bearer secret-key"), got[0].authorization);
     CHECK_EQ(std::string("application/json; charset=utf-8"), got[0].contentType);
-    CHECK_EQ(std::string("{\"application\":\"MyGame\",\"name\":\"startup\"}"), got[0].body);
+    CHECK_EQ(std::string("{\"application\":\"MyGame\",\"name\":\"startup\",\"tags\":{\"version\":\"1.2.3\"}}"), got[0].body);
 }
 
 static void reportCarriesValueAndTagsWhenGiven() {
     StubServer server;
-    trace_client::TraceClient client(server.baseUrl() + "/", "MyGame", "k");
+    trace_client::TraceClient client(server.baseUrl() + "/", "MyGame", "1.2.3", "k");
     client.report("command", 1.5, {{"name", "home"}, {"version", "1.0"}});
     CHECK(server.waitFor(1, 10));
     client.close();
@@ -275,7 +275,7 @@ static void reportCarriesValueAndTagsWhenGiven() {
 
 static void userAgentNamesTheClientVersion() {
     StubServer server;
-    trace_client::TraceClient client(server.baseUrl(), "MyGame", "k");
+    trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k");
     client.report("startup");
     CHECK(server.waitFor(1, 10));
     client.close();
@@ -287,7 +287,7 @@ static void userAgentNamesTheClientVersion() {
 static void reportReturnsBeforeTheServerAnswers() {
     StubServer server;
     server.hold();
-    trace_client::TraceClient client(server.baseUrl(), "MyGame", "k");
+    trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k");
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
     for (int i = 0; i < 10; ++i) client.report("startup");
     CHECK(secondsSince(start) < 0.1);
@@ -302,7 +302,7 @@ static void reportDoesNotThrowWhenNothingIsListening() {
         port = std::atoi(closed.baseUrl().substr(closed.baseUrl().rfind(':') + 1).c_str());
     }
     Log log;
-    trace_client::TraceClient client("http://127.0.0.1:" + std::to_string(port), "MyGame", "k", true, log.logger());
+    trace_client::TraceClient client("http://127.0.0.1:" + std::to_string(port), "MyGame", "1.2.3", "k", true, log.logger());
     client.report("startup");
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
     client.close();
@@ -314,7 +314,7 @@ static void rejectedKeyIsLoggedNotThrown() {
     StubServer server;
     server.status = 401;
     Log log;
-    trace_client::TraceClient client(server.baseUrl(), "MyGame", "wrong", true, log.logger());
+    trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "wrong", true, log.logger());
     client.report("startup");
     client.close();
     CHECK_EQ(1u, server.received().size());
@@ -329,7 +329,7 @@ static void missingCurlIsAnUnreachableServer() {
     setEnv("PATH", "/nonexistent-trace-client-test");
     Log log;
     {
-        trace_client::TraceClient client(server.baseUrl(), "MyGame", "k", true, log.logger());
+        trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k", true, log.logger());
         CHECK(client.isEnabled());
         client.report("startup");
         std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
@@ -345,11 +345,11 @@ static void missingCurlIsAnUnreachableServer() {
 static void disabledClientSendsNothing() {
     StubServer server;
     {
-        trace_client::TraceClient off(server.baseUrl(), "MyGame", "k", false);
+        trace_client::TraceClient off(server.baseUrl(), "MyGame", "1.2.3", "k", false);
         CHECK(!off.isEnabled());
         CHECK_EQ(std::string("config"), off.disabledReason());
         off.report("startup");
-        trace_client::TraceClient keyless(server.baseUrl(), "MyGame", "  ");
+        trace_client::TraceClient keyless(server.baseUrl(), "MyGame", "1.2.3", "  ");
         CHECK(!keyless.isEnabled());
         CHECK_EQ(std::string("no key"), keyless.disabledReason());
         keyless.report("startup");
@@ -358,7 +358,7 @@ static void disabledClientSendsNothing() {
         CHECK_EQ(std::string("config"), nothing.disabledReason());
         nothing.report("startup");
         nothing.close();
-        trace_client::TraceClient unnamed(server.baseUrl(), " ", "k");
+        trace_client::TraceClient unnamed(server.baseUrl(), " ", "1.2.3", "k");
         CHECK_EQ(std::string("unavailable"), unnamed.disabledReason());
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -367,7 +367,7 @@ static void disabledClientSendsNothing() {
 
 static void disabledReasonIsEmptyWhenTheClientReports() {
     StubServer server;
-    trace_client::TraceClient client(server.baseUrl(), "MyGame", "k");
+    trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k");
     CHECK(client.disabledReason().empty());
 }
 
@@ -377,7 +377,7 @@ static void environmentOptOutsDisableForEveryAcceptedValue() {
     for (std::size_t i = 0; i < sizeof off / sizeof off[0]; ++i) {
         cleanEnvironment();
         setEnv("TRACE_USAGE_REPORTING", off[i]);
-        trace_client::TraceClient client(server.baseUrl(), "MyGame", "k");
+        trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k");
         CHECK(!client.isEnabled());
         CHECK_EQ(std::string("environment"), client.disabledReason());
         client.report("startup");
@@ -386,7 +386,7 @@ static void environmentOptOutsDisableForEveryAcceptedValue() {
     for (std::size_t i = 0; i < sizeof dnt / sizeof dnt[0]; ++i) {
         cleanEnvironment();
         setEnv("DO_NOT_TRACK", dnt[i]);
-        trace_client::TraceClient client(server.baseUrl(), "MyGame", "k");
+        trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k");
         CHECK(!client.isEnabled());
         CHECK_EQ(std::string("environment"), client.disabledReason());
     }
@@ -402,7 +402,7 @@ static void otherEnvironmentValuesLeaveTheProgramSettingInCharge() {
         cleanEnvironment();
         setEnv("TRACE_USAGE_REPORTING", values[i]);
         setEnv("DO_NOT_TRACK", i == 0 ? "0" : "false");
-        trace_client::TraceClient client(server.baseUrl(), "MyGame", "k");
+        trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k");
         CHECK(client.isEnabled());
     }
     cleanEnvironment();
@@ -410,9 +410,9 @@ static void otherEnvironmentValuesLeaveTheProgramSettingInCharge() {
 
 static void environmentWinsOverTheConfigFlagAndTheKey() {
     setEnv("DO_NOT_TRACK", "1");
-    trace_client::TraceClient off("http://127.0.0.1:9", "MyGame", "k", false);
+    trace_client::TraceClient off("http://127.0.0.1:9", "MyGame", "1.2.3", "k", false);
     CHECK_EQ(std::string("environment"), off.disabledReason());
-    trace_client::TraceClient keyless("http://127.0.0.1:9", "MyGame", "");
+    trace_client::TraceClient keyless("http://127.0.0.1:9", "MyGame", "1.2.3", "");
     CHECK_EQ(std::string("environment"), keyless.disabledReason());
     CHECK(trace_client::environmentOptsOut());
     cleanEnvironment();
@@ -421,7 +421,7 @@ static void environmentWinsOverTheConfigFlagAndTheKey() {
 
 static void reportIgnoresABlankName() {
     StubServer server;
-    trace_client::TraceClient client(server.baseUrl(), "MyGame", "k");
+    trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k");
     client.report("");
     client.report("   ");
     client.close();
@@ -469,7 +469,7 @@ static void nothingTheProgramPassesCanChangeWhereOrWhatCurlSends() {
     StubServer server;
     // A newline in any value would, unescaped, start a new curl option.
     std::string sneaky = "My\"Game\nurl = \"http://127.0.0.1:1/\"\n";
-    trace_client::TraceClient client(server.baseUrl(), sneaky, "k\r\nX-Injected: 1");
+    trace_client::TraceClient client(server.baseUrl(), sneaky, "1.2.3", "k\r\nX-Injected: 1");
     client.report("startup\n", {{"t\\", "\"\n-o /tmp/x"}});
     CHECK(server.waitFor(1, 10));
     client.close();
@@ -480,14 +480,14 @@ static void nothingTheProgramPassesCanChangeWhereOrWhatCurlSends() {
         CHECK(lower(got[0].headerLines[i]).find("x-injected") != 0);
     }
     CHECK_EQ(trace_client::detail::json("My\"Game\nurl = \"http://127.0.0.1:1/\"", "startup\n", false, 0,
-                                        {{"t\\", "\"\n-o /tmp/x"}}),
+                                        {{"t\\", "\"\n-o /tmp/x"}, {"version", "1.2.3"}}),
              got[0].body);
 }
 
 static void aNewlineInTheBaseUrlCannotAddACurlOption() {
     StubServer server;
     // Unescaped, the second line would be an option of its own.
-    trace_client::TraceClient client(server.baseUrl() + "\nheader = X-Injected:1\n#", "MyGame", "k");
+    trace_client::TraceClient client(server.baseUrl() + "\nheader = X-Injected:1\n#", "MyGame", "1.2.3", "k");
     client.report("startup");
     client.close();
     std::vector<Request> got = server.received();
@@ -502,7 +502,7 @@ static void queueIsBoundedAndDropsRatherThanGrows() {
     StubServer server;
     server.hold(); // the sender waits on the first report
     Log log;
-    trace_client::TraceClient client(server.baseUrl(), "MyGame", "k", true, log.logger());
+    trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k", true, log.logger());
     const std::size_t flood = trace_client::QUEUE_CAPACITY * 3;
     for (std::size_t i = 0; i < flood; ++i) client.report("flood");
     CHECK(log.count("queue full") >= flood - trace_client::QUEUE_CAPACITY - 1);
@@ -516,7 +516,7 @@ static void closeSendsWhatWasJustQueuedBeforeStopping() {
     // a lost one visible.
     StubServer server;
     for (int i = 0; i < 20; ++i) {
-        trace_client::TraceClient client(server.baseUrl(), "MyCli", "k");
+        trace_client::TraceClient client(server.baseUrl(), "MyCli", "1.2.3", "k");
         client.report("startup", {{"run", std::to_string(i)}});
         client.close();
     }
@@ -526,7 +526,7 @@ static void closeSendsWhatWasJustQueuedBeforeStopping() {
 static void destructorClosesToo() {
     StubServer server;
     {
-        trace_client::TraceClient client(server.baseUrl(), "MyCli", "k");
+        trace_client::TraceClient client(server.baseUrl(), "MyCli", "1.2.3", "k");
         client.report("startup");
     }
     CHECK_EQ(1u, server.received().size());
@@ -535,7 +535,7 @@ static void destructorClosesToo() {
 static void closeReturnsWithinTheTimeoutWhenTheServerHangs() {
     StubServer server;
     server.hold(); // never answers while held
-    trace_client::TraceClient client(server.baseUrl(), "MyCli", "k");
+    trace_client::TraceClient client(server.baseUrl(), "MyCli", "1.2.3", "k");
     client.report("startup");
     client.report("second");
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -546,9 +546,85 @@ static void closeReturnsWithinTheTimeoutWhenTheServerHangs() {
     server.release();
 }
 
+static void reportTagsEveryEventWithTheProgramVersionTrimmed() {
+    StubServer server;
+    trace_client::TraceClient client(server.baseUrl(), "MyGame", " 2.0.0-SNAPSHOT ", "k");
+    CHECK(client.isEnabled());
+    client.report("command", {{"name", "home"}});
+    CHECK(server.waitFor(1, 10));
+    client.close();
+    std::vector<Request> got = server.received();
+    if (got.empty()) { CHECK(!got.empty()); return; }
+    CHECK_EQ(std::string("{\"application\":\"MyGame\",\"name\":\"command\","
+                         "\"tags\":{\"name\":\"home\",\"version\":\"2.0.0-SNAPSHOT\"}}"), got[0].body);
+    // the program's version is a tag; the User-Agent still names the client's
+    CHECK_EQ(std::string("trace-client-cpp/" TRACE_CLIENT_VERSION " (MyGame)"), got[0].userAgent);
+}
+
+static void anEventsOwnVersionTagWinsOverTheProgramVersion() {
+    StubServer server;
+    trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k");
+    trace_client::Tags tags;
+    tags["version"] = "9.9.9";
+    client.report("startup", tags);
+    CHECK(server.waitFor(1, 10));
+    client.close();
+    std::vector<Request> got = server.received();
+    if (got.empty()) { CHECK(!got.empty()); return; }
+    CHECK_EQ(std::string("{\"application\":\"MyGame\",\"name\":\"startup\",\"tags\":{\"version\":\"9.9.9\"}}"),
+             got[0].body);
+    CHECK_EQ(1u, tags.size());
+    CHECK_EQ(std::string("9.9.9"), tags["version"]);
+}
+
+static void theCallersTagsAreNeverModified() {
+    StubServer server;
+    trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k");
+    trace_client::Tags tags;
+    tags["name"] = "home";
+    client.report("command", tags);
+    client.report("command", 1.0, tags);
+    CHECK(server.waitFor(2, 10));
+    client.close();
+    CHECK_EQ(1u, tags.size());
+    CHECK(tags.find("version") == tags.end());
+
+    trace_client::Tags merged = trace_client::detail::withVersion(tags, "1.2.3");
+    CHECK_EQ(1u, tags.size());
+    CHECK_EQ(std::string("1.2.3"), merged["version"]);
+    CHECK_EQ(std::string("home"), merged["name"]);
+    CHECK_EQ(std::string("1.2.3"), trace_client::detail::withVersion(trace_client::Tags(), "1.2.3")["version"]);
+}
+
+static void aBlankOrOverlongVersionIsRejected() {
+    // Nothing in the client throws: a bad version is a bad argument like a
+    // blank application name -- the client reports nothing, reason "unavailable".
+    StubServer server;
+    {
+        trace_client::TraceClient empty(server.baseUrl(), "MyGame", "", "k");
+        CHECK(!empty.isEnabled());
+        CHECK_EQ(std::string("unavailable"), empty.disabledReason());
+        empty.report("startup");
+        trace_client::TraceClient blank(server.baseUrl(), "MyGame", " \t ", "k");
+        CHECK(!blank.isEnabled());
+        CHECK_EQ(std::string("unavailable"), blank.disabledReason());
+        blank.report("startup");
+        trace_client::TraceClient overlong(server.baseUrl(), "MyGame", std::string(trace_client::MAX_LENGTH + 1, '9'), "k");
+        CHECK(!overlong.isEnabled());
+        CHECK_EQ(std::string("unavailable"), overlong.disabledReason());
+        overlong.report("startup");
+        // exactly the limit, once trimmed, is accepted
+        trace_client::TraceClient longest(server.baseUrl(), "MyGame",
+                                          "  " + std::string(trace_client::MAX_LENGTH, '9') + "  ", "k");
+        CHECK(longest.isEnabled());
+        longest.close();
+    }
+    CHECK_EQ(0u, server.received().size());
+}
+
 static void closeIsPromptAndIdempotent() {
     StubServer server;
-    trace_client::TraceClient client(server.baseUrl(), "MyGame", "k");
+    trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k");
     client.report("startup");
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
     client.close();
@@ -588,6 +664,10 @@ int main() {
         {"destructorClosesToo", destructorClosesToo},
         {"closeReturnsWithinTheTimeoutWhenTheServerHangs", closeReturnsWithinTheTimeoutWhenTheServerHangs},
         {"closeIsPromptAndIdempotent", closeIsPromptAndIdempotent},
+        {"reportTagsEveryEventWithTheProgramVersionTrimmed", reportTagsEveryEventWithTheProgramVersionTrimmed},
+        {"anEventsOwnVersionTagWinsOverTheProgramVersion", anEventsOwnVersionTagWinsOverTheProgramVersion},
+        {"theCallersTagsAreNeverModified", theCallersTagsAreNeverModified},
+        {"aBlankOrOverlongVersionIsRejected", aBlankOrOverlongVersionIsRejected},
     };
     const std::size_t count = sizeof tests / sizeof tests[0];
     for (std::size_t i = 0; i < count; ++i) {
