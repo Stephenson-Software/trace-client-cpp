@@ -1,7 +1,7 @@
 # For toolchains without make (MSVC on Windows). The client itself needs no
 # build step: include trace_client.hpp. This only builds and runs the tests.
 cmake_minimum_required(VERSION 3.10)
-project(trace_client_cpp CXX)
+project(trace_client_cpp VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

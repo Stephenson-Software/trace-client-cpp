@@ -14,15 +14,32 @@ all three speak the same wire format and make the same promises.
 #include "trace_client.hpp"
 
 trace_client::TraceClient trace("https://trace.danielstephenson.dev", "MyGame",
+                                MYGAME_VERSION, // the program's own version, e.g. "1.4.0"
                                 settings.usageReportingKey,
                                 settings.usageReportingEnabled);
-trace.report("startup", {{"version", "1.4.0"}});
+trace.report("startup");
 trace.report("level-complete", 3.0, {{"level", "forest"}});
 
 // on shutdown -- also before a short-lived program exits, so the event is
 // sent. The destructor does the same.
 trace.close();
 ```
+
+## Every event carries the program's version
+
+The third constructor argument is the program's own version, and it is
+required. Every event the client sends — `startup`, `command`, anything
+else — carries it as the tag `version`, so every event can be tied to a
+release, not just `startup`. An event that passes its own `version` tag keeps
+it, and the tags passed to `report` are never modified. There is no need to
+tag `startup` by hand any more.
+
+The version is trimmed. Since nothing in the client throws, a blank one, or
+one over 255 bytes, is handled like a blank base URL: the client reports
+nothing and `disabledReason()` is `"unavailable"`.
+
+Before 0.2.0, the constructor took no version and only events tagged by hand
+carried one. Upgrading is one argument, after the application name.
 
 ## What `report` promises
 
@@ -47,13 +64,14 @@ starts no thread and costs nothing; the first that applies is the reason:
   program's own setting. Any other value, or an unset variable, leaves that
   setting in charge. `trace_client::environmentOptsOut()` answers the same
   question on its own.
-- **The program's own setting:** `enabled = false` (the fourth constructor
+- **The program's own setting:** `enabled = false` (the fifth constructor
   argument).
 - **No key** (or a blank one).
 
 `client.disabledReason()` says which one applied — `"environment"`, `"config"`
 or `"no key"`, or `"unavailable"` when the client cannot send at all (a
-browser build, a blank base URL or application name, or the thread could
+browser build, a blank base URL, application name or version, a version over
+255 bytes, or the thread could
 not be started) — and is empty when the client reports, so a program can print it.
 A default-constructed `TraceClient` is disabled with reason `"config"`.
 
@@ -131,13 +149,13 @@ The executable can be overridden before the include, e.g.
 
 `POST {baseUrl}/api/metrics` with `Authorization: Bearer <key>`,
 `Content-Type: application/json; charset=utf-8`,
-`User-Agent: trace-client-cpp/0.1.0 (<application>)` and a body of
+`User-Agent: trace-client-cpp/0.2.0 (<application>)` and a body of
 
 ```json
-{"application":"MyGame","name":"startup","tags":{"version":"1.4.0"}}
+{"application":"MyGame","name":"command","tags":{"name":"home","version":"1.4.0"}}
 ```
 
-`value` and `tags` are omitted when not given. The server assigns the
+`value` is omitted when not given; `tags` always holds at least `version`. The server assigns the
 timestamp. A `201` is success; anything else is passed to the `Logger` and
 dropped.
 
