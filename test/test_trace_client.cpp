@@ -9,7 +9,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <mutex>
 #include <condition_variable>
 #include <string>
@@ -712,6 +714,284 @@ static void closeIsPromptAndIdempotent() {
     client.report("after-close"); // a no-op, not a crash
 }
 
+// ---------------------------------------------------------------- installation ID
+
+static std::string tempBase() {
+    std::string base = trace_client::detail::getEnvironment("TMPDIR");
+    if (base.empty()) base = trace_client::detail::getEnvironment("TEMP");
+    if (base.empty()) base = "/tmp";
+    return base + "/trace-client-test-" + trace_client::detail::randomUuid();
+}
+
+static bool exists(const std::string &path) {
+    return trace_client::detail::pathKind(path) != trace_client::detail::PATH_MISSING;
+}
+
+static std::string readFile(const std::string &path) {
+    std::ifstream in(path.c_str(), std::ios::in | std::ios::binary);
+    std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return content;
+}
+
+static void writeFile(const std::string &path, const std::string &content) {
+    trace_client::detail::makeParentDirectories(path);
+    std::ofstream out(path.c_str(), std::ios::out | std::ios::trunc | std::ios::binary);
+    out << content;
+}
+
+static void removeDirectory(const std::string &path) {
+#if defined(_WIN32)
+    _rmdir(path.c_str());
+#else
+    ::rmdir(path.c_str());
+#endif
+}
+
+static bool isUuid(const std::string &id) {
+    if (id.size() != 36) return false;
+    for (std::size_t i = 0; i < id.size(); ++i) {
+        char c = id[i];
+        if (i == 8 || i == 13 || i == 18 || i == 23) {
+            if (c != '-') return false;
+        } else if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+            return false;
+        }
+    }
+    return id[14] == '4' && std::string("89ab").find(id[19]) != std::string::npos;
+}
+
+static std::string installTagIn(const std::string &body) {
+    std::string marker = "\"install\":\"";
+    std::size_t at = body.find(marker);
+    if (at == std::string::npos) return std::string();
+    at += marker.size();
+    return body.substr(at, body.find('"', at) - at);
+}
+
+static void randomUuidIsAVersion4Uuid() {
+    std::string a = trace_client::detail::randomUuid();
+    std::string b = trace_client::detail::randomUuid();
+    CHECK(isUuid(a));
+    CHECK(isUuid(b));
+    CHECK(a != b);
+}
+
+static void installIdFromFilePersistsOnceAndReusesIt() {
+    std::string base = tempBase();
+    std::string path = base + "/nested/dir/install-id";
+    std::string first = trace_client::TraceClient::installIdFromFile(path);
+    CHECK(isUuid(first));
+    CHECK_EQ(first + "\n", readFile(path));
+    std::string second = trace_client::TraceClient::installIdFromFile(path);
+    CHECK_EQ(first, second);
+    CHECK_EQ(first + "\n", readFile(path)); // read, not rewritten
+    std::remove(path.c_str());
+    removeDirectory(base + "/nested/dir");
+    removeDirectory(base + "/nested");
+    removeDirectory(base);
+}
+
+static void installIdFromFileReadsTheFirstValidLine() {
+    std::string base = tempBase();
+    std::string path = base + "/install-id";
+    std::string content = "\n   \nnot valid!\r\n  my-id_1.0  \r\nsecond-id\n";
+    writeFile(path, content);
+    CHECK_EQ(std::string("my-id_1.0"), trace_client::TraceClient::installIdFromFile(path));
+    CHECK_EQ(content, readFile(path));
+    // a file with no usable line gets a fresh ID written to it
+    writeFile(path, "has spaces\n" + std::string(trace_client::MAX_LENGTH + 1, 'x') + "\n");
+    std::string fresh = trace_client::TraceClient::installIdFromFile(path);
+    CHECK(isUuid(fresh));
+    CHECK_EQ(fresh + "\n", readFile(path));
+    std::remove(path.c_str());
+    removeDirectory(base);
+}
+
+static void installIdFromFileFallsBackToMemoryWhenThePathIsUnusable() {
+    // A path under a regular file can never be created, even as root.
+    std::string base = tempBase();
+    std::string blocker = base + "/a-file";
+    writeFile(blocker, "keep me\n");
+    std::string a = trace_client::TraceClient::installIdFromFile(blocker + "/install-id");
+    std::string b = trace_client::TraceClient::installIdFromFile(blocker + "/install-id");
+    CHECK(isUuid(a));
+    CHECK(isUuid(b));
+    CHECK(a != b); // nothing persisted
+    CHECK_EQ(std::string("keep me\n"), readFile(blocker));
+    // A path that is a directory is not readable as a file and is left alone.
+    std::string directory = base + "/a-directory";
+    trace_client::detail::makeParentDirectories(directory + "/");
+    CHECK(isUuid(trace_client::TraceClient::installIdFromFile(directory)));
+    CHECK(trace_client::detail::pathKind(directory) == trace_client::detail::PATH_OTHER);
+    // and an empty path is no path
+    CHECK(isUuid(trace_client::TraceClient::installIdFromFile("")));
+    std::remove(blocker.c_str());
+    removeDirectory(directory);
+    removeDirectory(base);
+}
+
+static void everyEventCarriesTheInstallIdFromTheFile() {
+    StubServer server;
+    std::string base = tempBase();
+    std::string path = base + "/install-id";
+    std::string id;
+    {
+        trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k",
+                                         trace_client::InstallId::fromFile(path));
+        CHECK(client.isEnabled());
+        id = client.installId();
+        CHECK(isUuid(id));
+        CHECK_EQ(id + "\n", readFile(path));
+        client.report("startup");
+        client.report("command", {{"name", "home"}});
+        CHECK(server.waitFor(2, 10));
+        client.close();
+        CHECK_EQ(id, client.installId()); // unchanged by close()
+    }
+    std::vector<Request> got = server.received();
+    CHECK_EQ(2u, got.size());
+    for (std::size_t i = 0; i < got.size(); ++i) CHECK_EQ(id, installTagIn(got[i].body));
+    if (!got.empty()) {
+        CHECK_EQ(std::string("{\"application\":\"MyGame\",\"name\":\"startup\",\"tags\":{\"install\":\"" + id
+                             + "\",\"version\":\"1.2.3\"}}"), got[0].body);
+    }
+    // a second client on the same file reuses the ID
+    trace_client::TraceClient again(server.baseUrl(), "MyGame", "1.2.3", "k",
+                                    trace_client::InstallId::fromFile(path));
+    CHECK_EQ(id, again.installId());
+    again.close();
+    std::remove(path.c_str());
+    removeDirectory(base);
+}
+
+static void aDisabledClientNeverMakesUpOrWritesAnInstallId() {
+    StubServer server;
+    std::string base = tempBase();
+    std::string path = base + "/install-id";
+    {
+        trace_client::TraceClient off(server.baseUrl(), "MyGame", "1.2.3", "k",
+                                      trace_client::InstallId::fromFile(path), false);
+        CHECK(!off.isEnabled());
+        CHECK(off.installId().empty());
+        trace_client::TraceClient keyless(server.baseUrl(), "MyGame", "1.2.3", " ",
+                                          trace_client::InstallId::fromFile(path));
+        CHECK(keyless.installId().empty());
+        trace_client::TraceClient unnamed(server.baseUrl(), " ", "1.2.3", "k",
+                                          trace_client::InstallId::fromFile(path));
+        CHECK(unnamed.installId().empty());
+        setEnv("TRACE_USAGE_REPORTING", "off");
+        trace_client::TraceClient environment(server.baseUrl(), "MyGame", "1.2.3", "k",
+                                              trace_client::InstallId::fromFile(path));
+        CHECK_EQ(std::string("environment"), environment.disabledReason());
+        CHECK(environment.installId().empty());
+        setEnv("TRACE_USAGE_REPORTING", NULL);
+        setEnv("DO_NOT_TRACK", "1");
+        trace_client::TraceClient dnt(server.baseUrl(), "MyGame", "1.2.3", "k",
+                                      trace_client::InstallId::of("explicit"));
+        CHECK(dnt.installId().empty());
+        setEnv("DO_NOT_TRACK", NULL);
+        trace_client::TraceClient nothing;
+        CHECK(nothing.installId().empty());
+    }
+    CHECK(!exists(path));
+    CHECK(!exists(base));
+    CHECK_EQ(0u, server.received().size());
+}
+
+static void anExplicitInstallIdIsTrimmedAndWinsOverTheFile() {
+    StubServer server;
+    std::string base = tempBase();
+    std::string path = base + "/install-id";
+    trace_client::InstallId install;
+    install.id = "  my-own-id  ";
+    install.file = path;
+    trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k", install);
+    CHECK_EQ(std::string("my-own-id"), client.installId());
+    client.report("startup");
+    CHECK(server.waitFor(1, 10));
+    client.close();
+    CHECK(!exists(path)); // the file is not consulted, so not written
+    std::vector<Request> got = server.received();
+    if (!got.empty()) CHECK_EQ(std::string("my-own-id"), installTagIn(got[0].body));
+    trace_client::TraceClient viaOf(server.baseUrl(), "MyGame", "1.2.3", "k", trace_client::InstallId::of("abc"));
+    CHECK_EQ(std::string("abc"), viaOf.installId());
+}
+
+static void aBlankInstallIdMeansNoneAndAnOverlongOneIsRejected() {
+    StubServer server;
+    {
+        trace_client::TraceClient blank(server.baseUrl(), "MyGame", "1.2.3", "k", trace_client::InstallId::of(" \t "));
+        CHECK(blank.isEnabled());
+        CHECK(blank.installId().empty());
+        blank.report("startup");
+        CHECK(server.waitFor(1, 10));
+        blank.close();
+        trace_client::TraceClient overlong(server.baseUrl(), "MyGame", "1.2.3", "k",
+                                           trace_client::InstallId::of(std::string(trace_client::MAX_LENGTH + 1, 'x')));
+        CHECK(!overlong.isEnabled());
+        CHECK_EQ(std::string("unavailable"), overlong.disabledReason());
+        CHECK(overlong.installId().empty());
+        overlong.report("startup");
+        trace_client::TraceClient longest(server.baseUrl(), "MyGame", "1.2.3", "k",
+                                          trace_client::InstallId::of(" " + std::string(trace_client::MAX_LENGTH, 'x') + " "));
+        CHECK(longest.isEnabled());
+        CHECK_EQ(trace_client::MAX_LENGTH, longest.installId().size());
+        longest.close();
+        trace_client::TraceClient none(server.baseUrl(), "MyGame", "1.2.3", "k");
+        CHECK(none.installId().empty());
+    }
+    std::vector<Request> got = server.received();
+    CHECK_EQ(1u, got.size());
+    if (!got.empty()) {
+        CHECK_EQ(std::string("{\"application\":\"MyGame\",\"name\":\"startup\",\"tags\":{\"version\":\"1.2.3\"}}"),
+                 got[0].body);
+    }
+}
+
+static void anEventsOwnInstallTagWins() {
+    StubServer server;
+    trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k", trace_client::InstallId::of("configured"));
+    trace_client::Tags tags;
+    tags["install"] = "per-event";
+    client.report("startup", tags);
+    CHECK(server.waitFor(1, 10));
+    client.close();
+    std::vector<Request> got = server.received();
+    if (!got.empty()) CHECK_EQ(std::string("per-event"), installTagIn(got[0].body));
+    CHECK_EQ(1u, tags.size()); // the caller's tags are never modified
+}
+
+static void theInstallTagNeverPassesTheTagCap() {
+    trace_client::Tags full;
+    for (std::size_t i = 0; i < trace_client::MAX_TAGS; ++i) full["t" + std::to_string(100 + i)] = "v";
+    CHECK(trace_client::detail::withInstall(full, "id").count("install") == 0);
+    CHECK_EQ(trace_client::MAX_TAGS, trace_client::detail::withInstall(full, "id").size());
+    trace_client::Tags room(full);
+    room.erase(room.begin());
+    trace_client::Tags merged = trace_client::detail::withInstall(room, "id");
+    CHECK_EQ(trace_client::MAX_TAGS, merged.size());
+    CHECK_EQ(std::string("id"), merged["install"]);
+    CHECK(trace_client::detail::withInstall(room, "").count("install") == 0);
+
+    // Through the client: 31 of the event's own tags plus "version" fill the cap.
+    StubServer server;
+    trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k", trace_client::InstallId::of("configured"));
+    trace_client::Tags many;
+    for (std::size_t i = 0; i + 1 < trace_client::MAX_TAGS; ++i) many["t" + std::to_string(100 + i)] = "v";
+    client.report("startup", many);
+    many.erase(many.begin());
+    client.report("second", many);
+    CHECK(server.waitFor(2, 10));
+    client.close();
+    std::vector<Request> got = server.received();
+    CHECK_EQ(2u, got.size());
+    for (std::size_t i = 0; i < got.size(); ++i) {
+        bool first = got[i].body.find("\"name\":\"startup\"") != std::string::npos;
+        CHECK_EQ(first ? std::string() : std::string("configured"), installTagIn(got[i].body));
+        CHECK(got[i].body.find("\"version\":\"1.2.3\"") != std::string::npos);
+    }
+}
+
 int main() {
 #if defined(_WIN32)
     WSADATA wsa;
@@ -750,6 +1030,16 @@ int main() {
         {"anEventsOwnVersionTagWinsOverTheProgramVersion", anEventsOwnVersionTagWinsOverTheProgramVersion},
         {"theCallersTagsAreNeverModified", theCallersTagsAreNeverModified},
         {"aBlankOrOverlongVersionIsRejected", aBlankOrOverlongVersionIsRejected},
+        {"randomUuidIsAVersion4Uuid", randomUuidIsAVersion4Uuid},
+        {"installIdFromFilePersistsOnceAndReusesIt", installIdFromFilePersistsOnceAndReusesIt},
+        {"installIdFromFileReadsTheFirstValidLine", installIdFromFileReadsTheFirstValidLine},
+        {"installIdFromFileFallsBackToMemoryWhenThePathIsUnusable", installIdFromFileFallsBackToMemoryWhenThePathIsUnusable},
+        {"everyEventCarriesTheInstallIdFromTheFile", everyEventCarriesTheInstallIdFromTheFile},
+        {"aDisabledClientNeverMakesUpOrWritesAnInstallId", aDisabledClientNeverMakesUpOrWritesAnInstallId},
+        {"anExplicitInstallIdIsTrimmedAndWinsOverTheFile", anExplicitInstallIdIsTrimmedAndWinsOverTheFile},
+        {"aBlankInstallIdMeansNoneAndAnOverlongOneIsRejected", aBlankInstallIdMeansNoneAndAnOverlongOneIsRejected},
+        {"anEventsOwnInstallTagWins", anEventsOwnInstallTagWins},
+        {"theInstallTagNeverPassesTheTagCap", theInstallTagNeverPassesTheTagCap},
     };
     const std::size_t count = sizeof tests / sizeof tests[0];
     for (std::size_t i = 0; i < count; ++i) {

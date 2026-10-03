@@ -41,6 +41,61 @@ nothing and `disabledReason()` is `"unavailable"`.
 Before 0.2.0, the constructor took no version and only events tagged by hand
 carried one. Upgrading is one argument, after the application name.
 
+## Every event carries a random installation ID
+
+Since 0.3.0, a client can tag every event with `install`: a random ID for the
+installation, so the trace server can count **distinct installations**
+("active installs in the last 30 days") rather than raw events. It is said
+out loud here because it is the one thing the client sends that is the same
+from one event to the next. The Java client sends the same tag (there, a
+Spigot server's `server-id:`).
+
+**What it is.** A random version 4 UUID from `std::random_device`. It is not
+derived from anything — not a hostname, an IP or MAC address, a user, an
+account or a path. It identifies no person and no address; all it can say is
+"these events came from the same installation". (The trace server still sees
+the IP address of every HTTP request, as every web server does.)
+
+**Where it lives.** In a file the program chooses. There is no hidden default
+location: without an `InstallId` argument, no ID is made up, nothing is
+written anywhere and no `install` tag is sent.
+
+```cpp
+trace_client::TraceClient trace("https://trace.danielstephenson.dev", "MyGame",
+                                MYGAME_VERSION, settings.usageReportingKey,
+                                trace_client::InstallId::fromFile(saveDirectory + "/trace-install-id"),
+                                settings.usageReportingEnabled);
+```
+
+`TraceClient::installIdFromFile(path)` does the work: the first line of the
+file that is 1–255 characters of `[A-Za-z0-9_.-]` (surrounding whitespace
+ignored) is the ID. If the file is missing or has no such line, a new UUID is
+written to it — parent directories created — and used. If the path exists but
+cannot be read, or the write fails, a fresh UUID is used in memory for that run
+only. It never throws. It can be called directly, but then it writes whatever
+the opt-outs say; passing `InstallId::fromFile(path)` to the constructor
+instead means it runs only for a client that is enabled.
+
+A program that keeps the ID in its own settings passes it instead:
+
+```cpp
+trace_client::TraceClient trace(url, "MyGame", MYGAME_VERSION, key,
+                                trace_client::InstallId::of(settings.installId)); // blank: none sent
+```
+
+An explicit ID is trimmed, wins over a file (which is then not touched), and
+one over 255 bytes is handled like an overlong version: the client reports
+nothing and `disabledReason()` is `"unavailable"`. An event that passes its
+own `install` tag keeps it, and `install` is never added to an event that
+already has 32 tags. `trace.installId()` returns the ID in use — empty when
+the client is disabled or was given none — so a program can print it.
+
+**Resetting it.** Delete the file; the next start writes a new one. Or write
+your own value into it.
+
+**Opting out.** Every [opt-out](#turning-it-off) also stops the ID: a disabled
+client never generates one, never reads or writes the file, and sends nothing.
+
 ## What `report` promises
 
 | Property | Meaning |
@@ -64,8 +119,8 @@ starts no thread and costs nothing; the first that applies is the reason:
   program's own setting. Any other value, or an unset variable, leaves that
   setting in charge. `trace_client::environmentOptsOut()` answers the same
   question on its own.
-- **The program's own setting:** `enabled = false` (the fifth constructor
-  argument).
+- **The program's own setting:** `enabled = false` (the constructor argument
+  after the key, or after the `InstallId`).
 - **No key** (or a blank one).
 
 `client.disabledReason()` says which one applied — `"environment"`, `"config"`
@@ -74,6 +129,8 @@ browser build, a blank base URL, application name or version, a version over
 255 bytes, or the thread could
 not be started) — and is empty when the client reports, so a program can print it.
 A default-constructed `TraceClient` is disabled with reason `"config"`.
+A disabled client also never makes up or writes an
+[installation ID](#every-event-carries-a-random-installation-id).
 
 A program that runs on other people's machines should expose the `enabled`
 switch in its settings — and say so once, the first time it runs, so the
@@ -149,13 +206,14 @@ The executable can be overridden before the include, e.g.
 
 `POST {baseUrl}/api/metrics` with `Authorization: Bearer <key>`,
 `Content-Type: application/json; charset=utf-8`,
-`User-Agent: trace-client-cpp/0.2.0 (<application>)` and a body of
+`User-Agent: trace-client-cpp/0.3.0 (<application>)` and a body of
 
 ```json
-{"application":"MyGame","name":"command","tags":{"name":"home","version":"1.4.0"}}
+{"application":"MyGame","name":"command","tags":{"install":"0f8b6c1e-3a52-4c8e-9a0d-6e2f1b7c4d90","name":"home","version":"1.4.0"}}
 ```
 
-`value` is omitted when not given; `tags` always holds at least `version`. The server assigns the
+`value` is omitted when not given; `tags` always holds at least `version`, and
+`install` when the client was given an [installation ID](#every-event-carries-a-random-installation-id). The server assigns the
 timestamp. A `201` is success; anything else is passed to the `Logger` and
 dropped.
 
