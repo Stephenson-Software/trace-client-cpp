@@ -465,6 +465,83 @@ static void tagsAreHeldToTheServerLimits() {
     CHECK_EQ(254u, cut.size());
 }
 
+static void cleanUtf8ReplacesEveryMalformedSequence() {
+    using trace_client::detail::cleanUtf8;
+    const std::string fffd = "\xEF\xBF\xBD";
+    // Well-formed text of every length passes through, NUL included.
+    CHECK_EQ(std::string("a\xC3\xA9\xE2\x82\xAC\xF0\x9F\x98\x80"),
+             cleanUtf8("a\xC3\xA9\xE2\x82\xAC\xF0\x9F\x98\x80", std::string::npos));
+    CHECK_EQ(std::string("a\0b", 3), cleanUtf8(std::string("a\0b", 3), std::string::npos));
+    // Each byte of a sequence that cannot be decoded costs one U+FFFD.
+    CHECK_EQ(fffd + fffd, cleanUtf8("\xC0\xAF", std::string::npos));              // overlong, 2 bytes
+    CHECK_EQ(fffd + fffd + fffd, cleanUtf8("\xE0\x80\xAF", std::string::npos));   // overlong, 3 bytes
+    CHECK_EQ(fffd + fffd + fffd, cleanUtf8("\xED\xA0\x80", std::string::npos));   // UTF-16 surrogate
+    CHECK_EQ(fffd + fffd + fffd + fffd, cleanUtf8("\xF4\x90\x80\x80", std::string::npos)); // past U+10FFFF
+    CHECK_EQ(fffd + "x", cleanUtf8("\x80x", std::string::npos));                  // stray continuation
+    CHECK_EQ("a" + fffd + fffd, cleanUtf8("a\xE2\x82", std::string::npos));      // cut off at the end
+    CHECK_EQ(fffd + "A", cleanUtf8("\xC3" "A", std::string::npos));               // lead byte, no continuation
+}
+
+static void cleanUtf8NeverExceedsTheByteLimit() {
+    using trace_client::detail::cleanUtf8;
+    const std::string fffd = "\xEF\xBF\xBD";
+    CHECK_EQ(std::string(), cleanUtf8("abc", 0));
+    CHECK_EQ(std::string("ab"), cleanUtf8("abc", 2));
+    // A replacement is three bytes, and is left out rather than cut.
+    CHECK_EQ(std::string(), cleanUtf8("\xFF", 2));
+    CHECK_EQ(fffd, cleanUtf8("\xFF\xFF", 5));
+    // A four-byte character that does not fit is left out whole.
+    CHECK_EQ(std::string("abc"), cleanUtf8("abc\xF0\x9F\x98\x80", 6));
+    CHECK_EQ(std::string("abc\xF0\x9F\x98\x80"), cleanUtf8("abc\xF0\x9F\x98\x80", 7));
+}
+
+static void curlQuoteKeepsEveryValueOnOneConfigLine() {
+    using trace_client::detail::curlQuote;
+    CHECK_EQ(std::string("\"\""), curlQuote(""));
+    CHECK_EQ(std::string("\"a\\\"b\\\\c\""), curlQuote("a\"b\\c"));
+    CHECK_EQ(std::string("\"\\n\\r\\t\\v\""), curlQuote("\n\r\t\v"));
+    // Control characters curl has no escape for are dropped; the rest is kept.
+    CHECK_EQ(std::string("\"xy\""), curlQuote(std::string("x\x01\x1f\b\f\0y", 7)));
+    CHECK_EQ(std::string("\"caf\xC3\xA9 \x7F\""), curlQuote("caf\xC3\xA9 \x7F"));
+    // Whatever the bytes, the result is one quoted line: no raw control
+    // character, and no quote that is not escaped except the two around it.
+    std::string every;
+    for (int c = 0; c < 256; ++c) every += static_cast<char>(c);
+    std::string quoted = curlQuote(every);
+    for (std::size_t i = 0; i < quoted.size(); ++i) {
+        CHECK(static_cast<unsigned char>(quoted[i]) >= 0x20);
+    }
+    for (std::size_t i = 1; i + 1 < quoted.size(); ++i) {
+        if (quoted[i] == '\\') { ++i; continue; }
+        CHECK(quoted[i] != '"');
+    }
+    CHECK_EQ('"', quoted[0]);
+    CHECK_EQ('"', quoted[quoted.size() - 1]);
+}
+
+static void headerSafeDropsControlCharactersOnly() {
+    using trace_client::detail::headerSafe;
+    CHECK_EQ(std::string("abc d\xC3\xA9"), headerSafe("a\r\nb\tc\x7F d\xC3\xA9"));
+    CHECK_EQ(std::string("Bearer"), headerSafe(std::string("Bear\0er", 7)));
+    CHECK_EQ(std::string(), headerSafe("\x01\x1f\x7F"));
+}
+
+static void parseStatusReadsCurlsWriteOutOrReportsNoAnswer() {
+#if !defined(TRACE_CLIENT_USE_LIBCURL) && !defined(__EMSCRIPTEN__)
+    using trace_client::detail::parseStatus;
+    CHECK_EQ(201, parseStatus("201"));
+    CHECK_EQ(401, parseStatus(" 401\r\n"));
+    CHECK_EQ(999, parseStatus("999"));
+    // curl writes 000 when no response came back at all.
+    CHECK_EQ(-1, parseStatus("000"));
+    CHECK_EQ(-1, parseStatus(""));
+    CHECK_EQ(-1, parseStatus(" \n"));
+    CHECK_EQ(-1, parseStatus("1000"));
+    CHECK_EQ(-1, parseStatus("20l"));
+    CHECK_EQ(-1, parseStatus("HTTP/1.1 201"));
+#endif
+}
+
 static void nothingTheProgramPassesCanChangeWhereOrWhatCurlSends() {
     StubServer server;
     // A newline in any value would, unescaped, start a new curl option.
@@ -657,6 +734,11 @@ int main() {
         {"reportIgnoresABlankName", reportIgnoresABlankName},
         {"jsonIsEscapedAndCleaned", jsonIsEscapedAndCleaned},
         {"tagsAreHeldToTheServerLimits", tagsAreHeldToTheServerLimits},
+        {"cleanUtf8ReplacesEveryMalformedSequence", cleanUtf8ReplacesEveryMalformedSequence},
+        {"cleanUtf8NeverExceedsTheByteLimit", cleanUtf8NeverExceedsTheByteLimit},
+        {"curlQuoteKeepsEveryValueOnOneConfigLine", curlQuoteKeepsEveryValueOnOneConfigLine},
+        {"headerSafeDropsControlCharactersOnly", headerSafeDropsControlCharactersOnly},
+        {"parseStatusReadsCurlsWriteOutOrReportsNoAnswer", parseStatusReadsCurlsWriteOutOrReportsNoAnswer},
         {"nothingTheProgramPassesCanChangeWhereOrWhatCurlSends", nothingTheProgramPassesCanChangeWhereOrWhatCurlSends},
         {"aNewlineInTheBaseUrlCannotAddACurlOption", aNewlineInTheBaseUrlCannotAddACurlOption},
         {"queueIsBoundedAndDropsRatherThanGrows", queueIsBoundedAndDropsRatherThanGrows},
