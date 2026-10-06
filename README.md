@@ -136,7 +136,7 @@ A program that runs on other people's machines should expose the `enabled`
 switch in its settings — and say so once, the first time it runs, so the
 player knows reporting is on, that `TRACE_USAGE_REPORTING=off` turns it off,
 and where the details are:
-<https://github.com/Stephenson-Software/trace#usage-reporting>.
+<https://danielstephenson.dev/usage-reporting>.
 
 ## How a report is sent, and why that way
 
