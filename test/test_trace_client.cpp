@@ -544,6 +544,100 @@ static void parseStatusReadsCurlsWriteOutOrReportsNoAnswer() {
 #endif
 }
 
+// JSON's number grammar: -?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?
+static bool isJsonNumber(const std::string &text) {
+    std::size_t i = 0, n = text.size();
+    if (i < n && text[i] == '-') ++i;
+    if (i < n && text[i] == '0') ++i;
+    else if (i < n && text[i] >= '1' && text[i] <= '9') { while (i < n && std::isdigit(static_cast<unsigned char>(text[i]))) ++i; }
+    else return false;
+    if (i < n && text[i] == '.') {
+        std::size_t start = ++i;
+        while (i < n && std::isdigit(static_cast<unsigned char>(text[i]))) ++i;
+        if (i == start) return false;
+    }
+    if (i < n && (text[i] == 'e' || text[i] == 'E')) {
+        ++i;
+        if (i < n && (text[i] == '+' || text[i] == '-')) ++i;
+        std::size_t start = i;
+        while (i < n && std::isdigit(static_cast<unsigned char>(text[i]))) ++i;
+        if (i == start) return false;
+    }
+    return i == n;
+}
+
+// A locale whose decimal point is a comma, as in much of Europe.
+struct CommaDecimal : std::numpunct<char> {
+    char do_decimal_point() const { return ','; }
+    char do_thousands_sep() const { return '.'; }
+    std::string do_grouping() const { return "\3"; }
+};
+
+static void numberIsTheShortestJsonDecimalThatReadsBack() {
+    using trace_client::detail::number;
+    CHECK_EQ(std::string("0.1"), number(0.1));
+    CHECK_EQ(std::string("-3"), number(-3.0));
+    CHECK_EQ(std::string("1.5"), number(1.5));
+    CHECK_EQ(std::string("0.30000000000000004"), number(0.1 + 0.2));
+    // DBL_MAX itself is left out: it is written as 2e+308, which overflows
+    // (issue #7).
+    const double values[] = {0.0, -0.0, 1.0, 100.0, 123456789.0, 1.0 / 3.0, 2.0 / 3.0, 1e21, 1e-7,
+                             5e-324, 1.7e308, -2.5e-10, 9007199254740993.0};
+    for (std::size_t i = 0; i < sizeof values / sizeof values[0]; ++i) {
+        std::string text = number(values[i]);
+        CHECK(isJsonNumber(text));
+        double back = std::strtod(text.c_str(), NULL);
+        CHECK_EQ(values[i], back);
+    }
+    // The program's global locale never reaches the body: no decimal comma,
+    // no thousands separator.
+    std::locale previous = std::locale::global(std::locale(std::locale::classic(), new CommaDecimal));
+    CHECK_EQ(std::string("0.5"), number(0.5));
+    CHECK_EQ(std::string("1234567.25"), number(1234567.25));
+    std::locale::global(previous);
+}
+
+static void curlConfigFixesEveryOptionAndQuotesEveryValue() {
+#if !defined(TRACE_CLIENT_USE_LIBCURL) && !defined(__EMSCRIPTEN__)
+    trace_client::detail::Shared shared;
+    shared.endpoint = "https://trace.example.org/api/metrics";
+    shared.key = "se\"cret";
+    shared.application = "My\nGame";
+    std::string expected =
+        "url = \"https://trace.example.org/api/metrics\"\n"
+        "proto = \"=http,https\"\n"
+        "header = \"Content-Type: application/json; charset=utf-8\"\n"
+        "header = \"Expect:\"\n"
+        "header = \"Authorization: Bearer se\\\"cret\"\n"
+        "user-agent = \"trace-client-cpp/" TRACE_CLIENT_VERSION " (MyGame)\"\n"
+        "data-binary = \"{\\\"name\\\":\\\"n\\\"}\"\n"
+        "max-time = 5\n"
+        "connect-timeout = 5\n"
+#if defined(_WIN32)
+        "output = \"NUL\"\n"
+#else
+        "output = \"/dev/null\"\n"
+#endif
+        "write-out = \"%{http_code}\"\n";
+    CHECK_EQ(expected, trace_client::detail::curlConfig(shared, "{\"name\":\"n\"}"));
+#endif
+}
+
+static void isValidInstallIdAcceptsOnlyTheDocumentedCharacters() {
+    using trace_client::detail::isValidInstallId;
+    CHECK(isValidInstallId("0f8b6c1e-3a52-4c8e-9a0d-6e2f1b7c4d90"));
+    CHECK(isValidInstallId("A_z.9-"));
+    CHECK(isValidInstallId("x"));
+    CHECK(isValidInstallId(std::string(trace_client::MAX_LENGTH, 'x')));
+    CHECK(!isValidInstallId(""));
+    CHECK(!isValidInstallId(std::string(trace_client::MAX_LENGTH + 1, 'x')));
+    const char *invalid[] = {" x", "x ", "a b", "a/b", "a\\b", "a:b", "a+b", "a\"b", "a\nb", "caf\xC3\xA9"};
+    for (std::size_t i = 0; i < sizeof invalid / sizeof invalid[0]; ++i) {
+        CHECK(!isValidInstallId(invalid[i]));
+    }
+    CHECK(!isValidInstallId(std::string("a\0b", 3)));
+}
+
 static void nothingTheProgramPassesCanChangeWhereOrWhatCurlSends() {
     StubServer server;
     // A newline in any value would, unescaped, start a new curl option.
@@ -1019,6 +1113,9 @@ int main() {
         {"curlQuoteKeepsEveryValueOnOneConfigLine", curlQuoteKeepsEveryValueOnOneConfigLine},
         {"headerSafeDropsControlCharactersOnly", headerSafeDropsControlCharactersOnly},
         {"parseStatusReadsCurlsWriteOutOrReportsNoAnswer", parseStatusReadsCurlsWriteOutOrReportsNoAnswer},
+        {"numberIsTheShortestJsonDecimalThatReadsBack", numberIsTheShortestJsonDecimalThatReadsBack},
+        {"curlConfigFixesEveryOptionAndQuotesEveryValue", curlConfigFixesEveryOptionAndQuotesEveryValue},
+        {"isValidInstallIdAcceptsOnlyTheDocumentedCharacters", isValidInstallIdAcceptsOnlyTheDocumentedCharacters},
         {"nothingTheProgramPassesCanChangeWhereOrWhatCurlSends", nothingTheProgramPassesCanChangeWhereOrWhatCurlSends},
         {"aNewlineInTheBaseUrlCannotAddACurlOption", aNewlineInTheBaseUrlCannotAddACurlOption},
         {"queueIsBoundedAndDropsRatherThanGrows", queueIsBoundedAndDropsRatherThanGrows},
