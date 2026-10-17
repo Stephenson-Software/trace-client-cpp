@@ -12,6 +12,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <mutex>
 #include <condition_variable>
 #include <string>
@@ -579,10 +580,12 @@ static void numberIsTheShortestJsonDecimalThatReadsBack() {
     CHECK_EQ(std::string("-3"), number(-3.0));
     CHECK_EQ(std::string("1.5"), number(1.5));
     CHECK_EQ(std::string("0.30000000000000004"), number(0.1 + 0.2));
-    // DBL_MAX itself is left out: it is written as 2e+308, which overflows
-    // (issue #7).
+    // Rounded to one digit DBL_MAX is 2e+308, which overflows when read back.
+    CHECK_EQ(std::string("1.7976931348623157e+308"), number(std::numeric_limits<double>::max()));
+    CHECK_EQ(std::string("-1.7976931348623157e+308"), number(-std::numeric_limits<double>::max()));
     const double values[] = {0.0, -0.0, 1.0, 100.0, 123456789.0, 1.0 / 3.0, 2.0 / 3.0, 1e21, 1e-7,
-                             5e-324, 1.7e308, -2.5e-10, 9007199254740993.0};
+                             5e-324, 1.7e308, -2.5e-10, 9007199254740993.0,
+                             std::numeric_limits<double>::max(), -std::numeric_limits<double>::max()};
     for (std::size_t i = 0; i < sizeof values / sizeof values[0]; ++i) {
         std::string text = number(values[i]);
         CHECK(isJsonNumber(text));
