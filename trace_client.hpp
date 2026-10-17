@@ -251,9 +251,10 @@ inline std::string number(double value) {
         text = out.str();
         std::istringstream in(text);
         in.imbue(std::locale::classic());
+        // A failed read does not read back: text that overflows (DBL_MAX
+        // written as 2e+308) is stored as the largest double with failbit set.
         double back = 0;
-        in >> back;
-        if (back == value) break;
+        if (in >> back && back == value) break;
     }
     return text;
 }
