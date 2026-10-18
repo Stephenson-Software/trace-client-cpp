@@ -498,6 +498,42 @@ static void cleanUtf8NeverExceedsTheByteLimit() {
     CHECK_EQ(std::string("abc\xF0\x9F\x98\x80"), cleanUtf8("abc\xF0\x9F\x98\x80", 7));
 }
 
+static void quoteEscapesWhatJsonRequiresAndPassesTheRestThrough() {
+    using trace_client::detail::quote;
+    CHECK_EQ(std::string("\"\""), quote(""));
+    CHECK_EQ(std::string("\"a\\\"b\\\\c\""), quote("a\"b\\c"));
+    CHECK_EQ(std::string("\"\\b\\f\\n\\r\\t\""), quote("\b\f\n\r\t"));
+    // Control characters without a short escape are written as \u00XX.
+    CHECK_EQ(std::string("\"\\u0000\\u0001\\u000b\\u001f\""), quote(std::string("\0\x01\v\x1f", 4)));
+    // DEL, the solidus and UTF-8 need no escape in JSON and get none.
+    CHECK_EQ(std::string("\"/\x7F" "caf\xC3\xA9\""), quote("/\x7F" "caf\xC3\xA9"));
+    // Whatever the bytes, no raw control character reaches the body.
+    std::string every;
+    for (int c = 0; c < 256; ++c) every += static_cast<char>(c);
+    std::string quoted = quote(every);
+    for (std::size_t i = 0; i < quoted.size(); ++i) {
+        CHECK(static_cast<unsigned char>(quoted[i]) >= 0x20);
+    }
+}
+
+static void trimmingTreatsEveryAsciiSpaceAlike() {
+    using trace_client::detail::trim;
+    using trace_client::detail::trimLower;
+    using trace_client::detail::isBlank;
+    CHECK_EQ(std::string("a b"), trim(" \t\r\n\v\fa b \n"));
+    CHECK_EQ(std::string(), trim(""));
+    CHECK_EQ(std::string(), trim(" \t "));
+    CHECK_EQ(std::string("off"), trimLower(" OFF\t"));
+    CHECK_EQ(std::string("yes"), trimLower("YeS"));
+    // Only ASCII letters are folded; other bytes are left as they are.
+    CHECK_EQ(std::string("\xC3\x89t\xC3\xA9"), trimLower("\xC3\x89T\xC3\xA9"));
+    CHECK(isBlank(""));
+    CHECK(isBlank(" \t\r\n\v\f"));
+    CHECK(!isBlank(" x "));
+    // A no-break space is not ASCII whitespace, so a key of one is not blank.
+    CHECK(!isBlank("\xC2\xA0"));
+}
+
 static void curlQuoteKeepsEveryValueOnOneConfigLine() {
     using trace_client::detail::curlQuote;
     CHECK_EQ(std::string("\"\""), curlQuote(""));
@@ -1113,6 +1149,8 @@ int main() {
         {"tagsAreHeldToTheServerLimits", tagsAreHeldToTheServerLimits},
         {"cleanUtf8ReplacesEveryMalformedSequence", cleanUtf8ReplacesEveryMalformedSequence},
         {"cleanUtf8NeverExceedsTheByteLimit", cleanUtf8NeverExceedsTheByteLimit},
+        {"quoteEscapesWhatJsonRequiresAndPassesTheRestThrough", quoteEscapesWhatJsonRequiresAndPassesTheRestThrough},
+        {"trimmingTreatsEveryAsciiSpaceAlike", trimmingTreatsEveryAsciiSpaceAlike},
         {"curlQuoteKeepsEveryValueOnOneConfigLine", curlQuoteKeepsEveryValueOnOneConfigLine},
         {"headerSafeDropsControlCharactersOnly", headerSafeDropsControlCharactersOnly},
         {"parseStatusReadsCurlsWriteOutOrReportsNoAnswer", parseStatusReadsCurlsWriteOutOrReportsNoAnswer},
