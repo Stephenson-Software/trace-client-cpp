@@ -422,6 +422,56 @@ static void environmentWinsOverTheConfigFlagAndTheKey() {
     CHECK(!trace_client::environmentOptsOut());
 }
 
+static void doNotTrackOptsOutWhateverTraceUsageReportingSays() {
+    // Either variable alone is enough; one saying "on" does not cancel the other.
+    setEnv("TRACE_USAGE_REPORTING", "on");
+    setEnv("DO_NOT_TRACK", "1");
+    CHECK(trace_client::environmentOptsOut());
+    trace_client::TraceClient dnt("http://127.0.0.1:9", "MyGame", "1.2.3", "k");
+    CHECK_EQ(std::string("environment"), dnt.disabledReason());
+    setEnv("TRACE_USAGE_REPORTING", "off");
+    setEnv("DO_NOT_TRACK", "0");
+    CHECK(trace_client::environmentOptsOut());
+    trace_client::TraceClient off("http://127.0.0.1:9", "MyGame", "1.2.3", "k");
+    CHECK_EQ(std::string("environment"), off.disabledReason());
+}
+
+static void disabledReasonIsTheFirstOptOutThatApplies() {
+    // Environment, then the program's setting, then the key, then bad arguments.
+    trace_client::TraceClient offAndKeyless("", " ", "", " ", false);
+    CHECK_EQ(std::string("config"), offAndKeyless.disabledReason());
+    trace_client::TraceClient keylessAndUnnamed("", " ", "", " ");
+    CHECK_EQ(std::string("no key"), keylessAndUnnamed.disabledReason());
+    trace_client::TraceClient offAndUnnamed("http://127.0.0.1:9", " ", "1.2.3", "k", false);
+    CHECK_EQ(std::string("config"), offAndUnnamed.disabledReason());
+}
+
+static void aBlankBaseUrlIsUnavailable() {
+    const char *urls[] = {"", " \t\r\n"};
+    for (std::size_t i = 0; i < sizeof urls / sizeof urls[0]; ++i) {
+        trace_client::TraceClient client(urls[i], "MyGame", "1.2.3", "k");
+        CHECK(!client.isEnabled());
+        CHECK_EQ(std::string("unavailable"), client.disabledReason());
+        client.report("startup");
+        client.close();
+    }
+}
+
+static void surroundingWhitespaceIsNotSent() {
+    StubServer server;
+    trace_client::TraceClient client(" \t" + server.baseUrl() + "/ \n", "  MyGame\t", "1.2.3", " secret-key \r\n");
+    CHECK(client.isEnabled());
+    client.report("startup");
+    CHECK(server.waitFor(1, 10));
+    client.close();
+    std::vector<Request> got = server.received();
+    if (got.empty()) { CHECK(!got.empty()); return; }
+    CHECK_EQ(std::string("/api/metrics"), got[0].path);
+    CHECK_EQ(std::string("Bearer secret-key"), got[0].authorization);
+    CHECK_EQ(std::string("trace-client-cpp/" TRACE_CLIENT_VERSION " (MyGame)"), got[0].userAgent);
+    CHECK(got[0].body.find("\"application\":\"MyGame\"") != std::string::npos);
+}
+
 static void reportIgnoresABlankName() {
     StubServer server;
     trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k");
@@ -1144,6 +1194,10 @@ int main() {
         {"environmentOptOutsDisableForEveryAcceptedValue", environmentOptOutsDisableForEveryAcceptedValue},
         {"otherEnvironmentValuesLeaveTheProgramSettingInCharge", otherEnvironmentValuesLeaveTheProgramSettingInCharge},
         {"environmentWinsOverTheConfigFlagAndTheKey", environmentWinsOverTheConfigFlagAndTheKey},
+        {"doNotTrackOptsOutWhateverTraceUsageReportingSays", doNotTrackOptsOutWhateverTraceUsageReportingSays},
+        {"disabledReasonIsTheFirstOptOutThatApplies", disabledReasonIsTheFirstOptOutThatApplies},
+        {"aBlankBaseUrlIsUnavailable", aBlankBaseUrlIsUnavailable},
+        {"surroundingWhitespaceIsNotSent", surroundingWhitespaceIsNotSent},
         {"reportIgnoresABlankName", reportIgnoresABlankName},
         {"jsonIsEscapedAndCleaned", jsonIsEscapedAndCleaned},
         {"tagsAreHeldToTheServerLimits", tagsAreHeldToTheServerLimits},
