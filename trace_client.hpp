@@ -259,10 +259,6 @@ inline std::string number(double value) {
     return text;
 }
 
-/**
- * The report body. JSON is written by hand so this file has no dependencies;
- * the shape is fixed and small, three scalars and a flat string map.
- */
 /** The tag every event carries the installation's ID as. */
 static const char *const INSTALL_TAG = "install";
 
@@ -350,6 +346,10 @@ inline void makeParentDirectories(const std::string &path) {
     }
 }
 
+/**
+ * The report body. JSON is written by hand so this file has no dependencies;
+ * the shape is fixed and small, three scalars and a flat string map.
+ */
 inline std::string json(const std::string &application, const std::string &name,
                         bool hasValue, double value, const Tags &tags) {
     std::string out = "{\"application\":" + quote(cleanUtf8(application, std::string::npos));

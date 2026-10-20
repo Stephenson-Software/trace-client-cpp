@@ -125,9 +125,9 @@ starts no thread and costs nothing; the first that applies is the reason:
 
 `client.disabledReason()` says which one applied — `"environment"`, `"config"`
 or `"no key"`, or `"unavailable"` when the client cannot send at all (a
-browser build, a blank base URL, application name or version, a version over
-255 bytes, or the thread could
-not be started) — and is empty when the client reports, so a program can print it.
+browser build, a blank base URL, application name or version, a version or
+explicit installation ID over 255 bytes, or the thread could not be started) —
+and is empty when the client reports, so a program can print it.
 A default-constructed `TraceClient` is disabled with reason `"config"`.
 A disabled client also never makes up or writes an
 [installation ID](#every-event-carries-a-random-installation-id).
