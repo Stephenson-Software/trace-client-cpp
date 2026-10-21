@@ -15,6 +15,7 @@
 #include <limits>
 #include <mutex>
 #include <condition_variable>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -322,6 +323,63 @@ static void rejectedKeyIsLoggedNotThrown() {
     client.close();
     CHECK_EQ(1u, server.received().size());
     CHECK_EQ(1u, log.count("answered 401"));
+}
+
+static void aLoggerThatThrowsDoesNotStopTheSendingThread() {
+    StubServer server;
+    server.status = 500; // every report is a drop, so every report reaches the logger
+    std::atomic<int> calls(0);
+    trace_client::Logger throwing = [&calls](const std::string &) {
+        ++calls;
+        throw std::runtime_error("logger failed");
+    };
+    trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k", true, throwing);
+    client.report("first");
+    client.report("second");
+    client.report("third");
+    CHECK(server.waitFor(3, 10));
+    client.close();
+    CHECK_EQ(3u, server.received().size());
+    CHECK_EQ(3, calls.load());
+}
+
+static void aLoggerMayItselfReport() {
+    // The logger runs on the sending thread; a report from inside it is
+    // queued and sent like any other, not a deadlock.
+    StubServer server;
+    server.status = 500;
+    trace_client::TraceClient *self = NULL;
+    std::atomic<bool> reported(false);
+    trace_client::Logger reporting = [&self, &reported](const std::string &) {
+        if (!reported.exchange(true)) self->report("logged");
+    };
+    trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k", true, reporting);
+    self = &client;
+    client.report("startup");
+    CHECK(server.waitFor(2, 10));
+    client.close();
+    std::vector<Request> got = server.received();
+    CHECK_EQ(2u, got.size());
+    if (got.size() < 2) return;
+    CHECK(got[0].body.find("\"name\":\"startup\"") != std::string::npos);
+    CHECK(got[1].body.find("\"name\":\"logged\"") != std::string::npos);
+}
+
+static void theLoggerIsNeverCalledOnceCloseReturns() {
+    StubServer server;
+    server.hold(); // the request in flight never answers, so close() gives up on it
+    Log log;
+    trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k", true, log.logger());
+    client.report("startup");
+    client.report("second");
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    client.close(0.5);
+    std::size_t atClose = log.count("[trace]");
+    // The abandoned curl is killed and the sending thread finishes on its
+    // own; whatever it would say about that, the logger does not hear.
+    server.release();
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    CHECK_EQ(atClose, log.count("[trace]"));
 }
 
 static void missingCurlIsAnUnreachableServer() {
@@ -1188,6 +1246,9 @@ int main() {
         {"reportReturnsBeforeTheServerAnswers", reportReturnsBeforeTheServerAnswers},
         {"reportDoesNotThrowWhenNothingIsListening", reportDoesNotThrowWhenNothingIsListening},
         {"rejectedKeyIsLoggedNotThrown", rejectedKeyIsLoggedNotThrown},
+        {"aLoggerThatThrowsDoesNotStopTheSendingThread", aLoggerThatThrowsDoesNotStopTheSendingThread},
+        {"aLoggerMayItselfReport", aLoggerMayItselfReport},
+        {"theLoggerIsNeverCalledOnceCloseReturns", theLoggerIsNeverCalledOnceCloseReturns},
         {"missingCurlIsAnUnreachableServer", missingCurlIsAnUnreachableServer},
         {"disabledClientSendsNothing", disabledClientSendsNothing},
         {"disabledReasonIsEmptyWhenTheClientReports", disabledReasonIsEmptyWhenTheClientReports},
