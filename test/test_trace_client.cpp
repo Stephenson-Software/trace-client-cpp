@@ -345,18 +345,25 @@ static void aLoggerThatThrowsDoesNotStopTheSendingThread() {
 
 static void aLoggerMayItselfReport() {
     // The logger runs on the sending thread; a report from inside it is
-    // queued and sent like any other, not a deadlock.
+    // queued and sent like any other, not a deadlock. The test waits for that
+    // report() to return before close(): one racing close() is issue #14.
     StubServer server;
     server.status = 500;
     trace_client::TraceClient *self = NULL;
     std::atomic<bool> reported(false);
-    trace_client::Logger reporting = [&self, &reported](const std::string &) {
-        if (!reported.exchange(true)) self->report("logged");
+    std::atomic<bool> returned(false);
+    trace_client::Logger reporting = [&self, &reported, &returned](const std::string &) {
+        if (reported.exchange(true)) return;
+        self->report("logged");
+        returned = true;
     };
     trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k", true, reporting);
     self = &client;
     client.report("startup");
     CHECK(server.waitFor(2, 10));
+    std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    while (!returned && secondsSince(start) < 10) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    CHECK(returned);
     client.close();
     std::vector<Request> got = server.received();
     CHECK_EQ(2u, got.size());
