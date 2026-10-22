@@ -1006,7 +1006,7 @@ public:
     ~TraceClient() { close(); }
 
     /** Whether report() will actually send anything. False after close(). */
-    bool isEnabled() const { return static_cast<bool>(shared_); }
+    bool isEnabled() const { return static_cast<bool>(current()); }
 
     /**
      * Why this client reports nothing: empty when it reports, otherwise one
@@ -1035,9 +1035,14 @@ public:
      * then is abandoned. Safe to call more than once, and on a disabled client.
      */
     void close(double timeoutSeconds = TIMEOUT_SECONDS) {
-        if (!shared_) return;
         std::shared_ptr<detail::Shared> shared;
-        shared.swap(shared_);
+        try {
+            std::lock_guard<std::mutex> lock(sharedMutex_);
+            shared.swap(shared_);
+        } catch (...) {
+            return;
+        }
+        if (!shared) return;
         try {
             std::unique_lock<std::mutex> lock(shared->mutex);
             shared->closing = true;
@@ -1135,26 +1140,39 @@ private:
 #endif
     }
 
-    void enqueue(const std::string &name, bool hasValue, double value, const Tags &tags) {
-        if (!shared_ || detail::isBlank(name)) return;
+    // A copy of shared_, taken under its lock: the logger runs on the sending
+    // thread and may call report() while the program's thread is in close().
+    std::shared_ptr<detail::Shared> current() const {
         try {
-            std::string body = detail::json(shared_->application, name, hasValue, value,
+            std::lock_guard<std::mutex> lock(sharedMutex_);
+            return shared_;
+        } catch (...) {
+            return std::shared_ptr<detail::Shared>();
+        }
+    }
+
+    void enqueue(const std::string &name, bool hasValue, double value, const Tags &tags) {
+        std::shared_ptr<detail::Shared> shared = current();
+        if (!shared || detail::isBlank(name)) return;
+        try {
+            std::string body = detail::json(shared->application, name, hasValue, value,
                                             detail::withInstall(detail::withVersion(tags, version_), installId_));
             bool full = false;
             {
-                std::lock_guard<std::mutex> lock(shared_->mutex);
-                full = shared_->queue.size() >= QUEUE_CAPACITY;
+                std::lock_guard<std::mutex> lock(shared->mutex);
+                full = shared->queue.size() >= QUEUE_CAPACITY;
                 if (!full) {
-                    shared_->queue.push_back(body);
-                    shared_->changed.notify_all();
+                    shared->queue.push_back(body);
+                    shared->changed.notify_all();
                 }
             }
-            if (full) shared_->log("queue full, dropped " + name);
+            if (full) shared->log("queue full, dropped " + name);
         } catch (...) {
             // a report must never be the reason a program stops
         }
     }
 
+    mutable std::mutex sharedMutex_; // guards shared_ alone
     std::shared_ptr<detail::Shared> shared_;
     std::thread thread_;
     std::string version_;
