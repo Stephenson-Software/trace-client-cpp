@@ -346,7 +346,7 @@ static void aLoggerThatThrowsDoesNotStopTheSendingThread() {
 static void aLoggerMayItselfReport() {
     // The logger runs on the sending thread; a report from inside it is
     // queued and sent like any other, not a deadlock. The test waits for that
-    // report() to return before close(): one racing close() is issue #14.
+    // report() to return before close(): one racing close() is the next test.
     StubServer server;
     server.status = 500;
     trace_client::TraceClient *self = NULL;
@@ -370,6 +370,37 @@ static void aLoggerMayItselfReport() {
     if (got.size() < 2) return;
     CHECK(got[0].body.find("\"name\":\"startup\"") != std::string::npos);
     CHECK(got[1].body.find("\"name\":\"logged\"") != std::string::npos);
+}
+
+static void aLoggerMayReportWhileCloseIsRunning() {
+    // close() starts while the logger is running and the logger then calls
+    // report(): nothing orders the two threads, so this is the race of issue
+    // #14, which ThreadSanitizer reports unless report() and close() share a
+    // lock. Either outcome for "logged" is allowed; a crash or a hang is not.
+    StubServer server;
+    server.status = 500;
+    trace_client::TraceClient *self = NULL;
+    std::atomic<bool> inLogger(false);
+    std::atomic<bool> returned(false);
+    trace_client::Logger reporting = [&self, &inLogger, &returned](const std::string &) {
+        if (inLogger.exchange(true)) return;
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        self->report("logged");
+        returned = true;
+    };
+    trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k", true, reporting);
+    self = &client;
+    client.report("startup");
+    std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    while (!inLogger && secondsSince(start) < 10) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    CHECK(inLogger);
+    client.close();
+    CHECK(returned);
+    CHECK(!client.isEnabled());
+    std::vector<Request> got = server.received();
+    CHECK(!got.empty());
+    if (got.empty()) return;
+    CHECK(got[0].body.find("\"name\":\"startup\"") != std::string::npos);
 }
 
 static void theLoggerIsNeverCalledOnceCloseReturns() {
@@ -1255,6 +1286,7 @@ int main() {
         {"rejectedKeyIsLoggedNotThrown", rejectedKeyIsLoggedNotThrown},
         {"aLoggerThatThrowsDoesNotStopTheSendingThread", aLoggerThatThrowsDoesNotStopTheSendingThread},
         {"aLoggerMayItselfReport", aLoggerMayItselfReport},
+        {"aLoggerMayReportWhileCloseIsRunning", aLoggerMayReportWhileCloseIsRunning},
         {"theLoggerIsNeverCalledOnceCloseReturns", theLoggerIsNeverCalledOnceCloseReturns},
         {"missingCurlIsAnUnreachableServer", missingCurlIsAnUnreachableServer},
         {"disabledClientSendsNothing", disabledClientSendsNothing},
