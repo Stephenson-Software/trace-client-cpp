@@ -1102,7 +1102,9 @@ private:
                 }
             }
         } catch (...) {
-            shared_.reset();
+            // The sending thread may already be running: stop it as close()
+            // does, or the destructor would find it joinable and terminate.
+            close(0.0);
             installId_.clear();
             reason_ = REASON_UNAVAILABLE;
         }
