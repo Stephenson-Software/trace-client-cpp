@@ -63,9 +63,19 @@ static std::string currentTest;
 
 // Counts down the calling thread's allocations and fails the one that finds
 // it at zero, once; -1 never fails. Thread-local, so neither the sending
-// thread nor a StubServer is affected.
+// thread nor a StubServer is affected. Clang's address and thread sanitizer
+// runtimes define operator new themselves, so there nothing is ever failed.
 static thread_local long allocationsUntilFailure = -1;
 
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define SANITIZER_OWNS_NEW
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+#define SANITIZER_OWNS_NEW
+#endif
+#endif
+
+#if !defined(SANITIZER_OWNS_NEW)
 void *operator new(std::size_t size) {
     if (allocationsUntilFailure >= 0 && allocationsUntilFailure-- == 0) throw std::bad_alloc();
     void *p = std::malloc(size ? size : 1);
@@ -77,6 +87,7 @@ void operator delete(void *p) noexcept { std::free(p); }
 
 #if __cplusplus >= 201402L
 void operator delete(void *p, std::size_t) noexcept { std::free(p); }
+#endif
 #endif
 
 static double secondsSince(std::chrono::steady_clock::time_point start) {
