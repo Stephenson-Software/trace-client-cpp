@@ -14,6 +14,7 @@
 #include <iterator>
 #include <limits>
 #include <mutex>
+#include <new>
 #include <condition_variable>
 #include <stdexcept>
 #include <string>
@@ -59,6 +60,35 @@ static std::string currentTest;
                       << (expected) << "] got [" << (actual) << "]" << std::endl;          \
         }                                                                                  \
     } while (0)
+
+// Counts down the calling thread's allocations and fails the one that finds
+// it at zero, once; -1 never fails. Thread-local, so neither the sending
+// thread nor a StubServer is affected. Clang's address and thread sanitizer
+// runtimes define operator new themselves, so there nothing is ever failed.
+static thread_local long allocationsUntilFailure = -1;
+
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define SANITIZER_OWNS_NEW
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+#define SANITIZER_OWNS_NEW
+#endif
+#endif
+
+#if !defined(SANITIZER_OWNS_NEW)
+void *operator new(std::size_t size) {
+    if (allocationsUntilFailure >= 0 && allocationsUntilFailure-- == 0) throw std::bad_alloc();
+    void *p = std::malloc(size ? size : 1);
+    if (!p) throw std::bad_alloc();
+    return p;
+}
+
+void operator delete(void *p) noexcept { std::free(p); }
+
+#if __cplusplus >= 201402L
+void operator delete(void *p, std::size_t) noexcept { std::free(p); }
+#endif
+#endif
 
 static double secondsSince(std::chrono::steady_clock::time_point start) {
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
@@ -890,6 +920,33 @@ static void destructorClosesToo() {
     CHECK_EQ(1u, server.received().size());
 }
 
+static void everyAllocationTheConstructorMakesMayFailWithoutAborting() {
+    // Made before failures are armed; the ID is too long for the small-string
+    // buffer, so copying it in after the thread has started allocates.
+    const std::string base = "http://127.0.0.1:9", app = "MyGame", version = "1.2.3", key = "k";
+    const std::string id(100, 'i');
+    const trace_client::InstallId install = trace_client::InstallId::of(id);
+    for (long n = 0;; ++n) {
+        bool failed = false;
+        {
+            allocationsUntilFailure = n;
+            trace_client::TraceClient client(base, app, version, key, install);
+            failed = allocationsUntilFailure < 0;
+            allocationsUntilFailure = -1;
+            if (failed) {
+                CHECK(!client.isEnabled());
+                CHECK_EQ(std::string("unavailable"), client.disabledReason());
+                CHECK(client.installId().empty());
+                client.report("startup");
+            } else {
+                CHECK(client.isEnabled());
+                CHECK_EQ(id, client.installId());
+            }
+        } // a sending thread left joinable here would terminate the program
+        if (!failed) break;
+    }
+}
+
 static void closeReturnsWithinTheTimeoutWhenTheServerHangs() {
     StubServer server;
     server.hold(); // never answers while held
@@ -1316,6 +1373,7 @@ int main() {
         {"queueIsBoundedAndDropsRatherThanGrows", queueIsBoundedAndDropsRatherThanGrows},
         {"closeSendsWhatWasJustQueuedBeforeStopping", closeSendsWhatWasJustQueuedBeforeStopping},
         {"destructorClosesToo", destructorClosesToo},
+        {"everyAllocationTheConstructorMakesMayFailWithoutAborting", everyAllocationTheConstructorMakesMayFailWithoutAborting},
         {"closeReturnsWithinTheTimeoutWhenTheServerHangs", closeReturnsWithinTheTimeoutWhenTheServerHangs},
         {"closeIsPromptAndIdempotent", closeIsPromptAndIdempotent},
         {"reportTagsEveryEventWithTheProgramVersionTrimmed", reportTagsEveryEventWithTheProgramVersionTrimmed},
