@@ -1050,6 +1050,37 @@ static void closeIsPromptAndIdempotent() {
     client.report("after-close"); // a no-op, not a crash
 }
 
+static void closeWithABoundTooLongForTheClockSendsEverythingQueued() {
+    // Infinity, or a bound whose deadline the clock cannot hold, means "as
+    // long as it takes" -- not a deadline that wrapped round into the past.
+    const double bounds[] = {HUGE_VAL, std::numeric_limits<double>::max(), 1e300, 1e12};
+    StubServer server;
+    std::size_t expected = 0;
+    for (std::size_t i = 0; i < sizeof bounds / sizeof bounds[0]; ++i) {
+        trace_client::TraceClient client(server.baseUrl(), "MyCli", "1.2.3", "k");
+        for (int n = 0; n < 5; ++n) client.report("startup", {{"run", std::to_string(n)}});
+        client.close(bounds[i]);
+        expected += 5;
+        CHECK_EQ(expected, server.received().size());
+    }
+}
+
+static void closeWithANegativeOrNanBoundWaitsForNothing() {
+    const double bounds[] = {std::nan(""), -1.0, -HUGE_VAL};
+    for (std::size_t i = 0; i < sizeof bounds / sizeof bounds[0]; ++i) {
+        StubServer server;
+        server.hold(); // never answers while held
+        trace_client::TraceClient client(server.baseUrl(), "MyCli", "1.2.3", "k");
+        client.report("startup");
+        client.report("second");
+        std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        client.close(bounds[i]);
+        CHECK(secondsSince(start) < 1.0);
+        CHECK(!client.isEnabled());
+        server.release();
+    }
+}
+
 // ---------------------------------------------------------------- installation ID
 
 static std::string tempBase() {
@@ -1376,6 +1407,8 @@ int main() {
         {"everyAllocationTheConstructorMakesMayFailWithoutAborting", everyAllocationTheConstructorMakesMayFailWithoutAborting},
         {"closeReturnsWithinTheTimeoutWhenTheServerHangs", closeReturnsWithinTheTimeoutWhenTheServerHangs},
         {"closeIsPromptAndIdempotent", closeIsPromptAndIdempotent},
+        {"closeWithABoundTooLongForTheClockSendsEverythingQueued", closeWithABoundTooLongForTheClockSendsEverythingQueued},
+        {"closeWithANegativeOrNanBoundWaitsForNothing", closeWithANegativeOrNanBoundWaitsForNothing},
         {"reportTagsEveryEventWithTheProgramVersionTrimmed", reportTagsEveryEventWithTheProgramVersionTrimmed},
         {"anEventsOwnVersionTagWinsOverTheProgramVersion", anEventsOwnVersionTagWinsOverTheProgramVersion},
         {"theCallersTagsAreNeverModified", theCallersTagsAreNeverModified},
