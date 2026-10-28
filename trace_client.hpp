@@ -1032,7 +1032,9 @@ public:
     /**
      * Stops the sending thread, giving reports already queued up to
      * timeoutSeconds in total to be sent first; whatever is still in flight
-     * then is abandoned. Safe to call more than once, and on a disabled client.
+     * then is abandoned. A NaN or negative timeoutSeconds waits for nothing;
+     * an infinite one waits until the queue is sent. Safe to call more than
+     * once, and on a disabled client.
      */
     void close(double timeoutSeconds = TIMEOUT_SECONDS) {
         std::shared_ptr<detail::Shared> shared;
@@ -1047,10 +1049,17 @@ public:
             std::unique_lock<std::mutex> lock(shared->mutex);
             shared->closing = true;
             shared->changed.notify_all();
+            // NaN and negative bounds wait for nothing. Past about three years
+            // (infinity included) the deadline would overflow the clock, so
+            // such a bound waits until the queue is sent; each request is
+            // still bounded by curl's own timeout.
+            double seconds = timeoutSeconds > 0 ? timeoutSeconds : 0;
+            bool unbounded = seconds > 1e8;
             std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now()
-                + std::chrono::milliseconds(static_cast<long long>(timeoutSeconds * 1000));
+                + std::chrono::milliseconds(unbounded ? 0 : static_cast<long long>(seconds * 1000));
             while (!shared->done) {
-                if (shared->changed.wait_until(lock, deadline) == std::cv_status::timeout) break;
+                if (unbounded) shared->changed.wait(lock);
+                else if (shared->changed.wait_until(lock, deadline) == std::cv_status::timeout) break;
             }
             if (shared->done) {
                 lock.unlock();
