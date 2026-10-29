@@ -1143,6 +1143,56 @@ static void randomUuidIsAVersion4Uuid() {
     CHECK(a != b);
 }
 
+static void pathKindTellsAMissingPathFromAFileFromAnythingElse() {
+    using trace_client::detail::pathKind;
+    std::string base = tempBase();
+    CHECK(pathKind(base) == trace_client::detail::PATH_MISSING);
+    CHECK(pathKind(base + "/below/it") == trace_client::detail::PATH_MISSING);
+    writeFile(base + "/a-file", "x");
+    CHECK(pathKind(base + "/a-file") == trace_client::detail::PATH_FILE);
+    CHECK(pathKind(base) == trace_client::detail::PATH_OTHER); // a directory
+    // Nothing can exist under a regular file, so that counts as missing too.
+    CHECK(pathKind(base + "/a-file/below") == trace_client::detail::PATH_MISSING);
+    std::remove((base + "/a-file").c_str());
+    removeDirectory(base);
+}
+
+static void makeParentDirectoriesCreatesEveryAncestorButNotThePathItself() {
+    using trace_client::detail::makeParentDirectories;
+    using trace_client::detail::pathKind;
+    std::string base = tempBase();
+    std::string path = base + "/a/b/leaf";
+    makeParentDirectories(path);
+    CHECK(pathKind(base + "/a/b") == trace_client::detail::PATH_OTHER);
+    CHECK(pathKind(path) == trace_client::detail::PATH_MISSING);
+    // Directories that are already there are left as they are.
+    makeParentDirectories(path);
+    CHECK(pathKind(base + "/a/b") == trace_client::detail::PATH_OTHER);
+    // A trailing separator makes the last component a parent as well.
+    makeParentDirectories(path + "/");
+    CHECK(pathKind(path) == trace_client::detail::PATH_OTHER);
+    // A failure is ignored: nothing can be made under a regular file, and the
+    // file itself is not touched.
+    std::string blocker = base + "/a/a-file";
+    writeFile(blocker, "keep me\n");
+    makeParentDirectories(blocker + "/x/y");
+    CHECK(pathKind(blocker) == trace_client::detail::PATH_FILE);
+    CHECK_EQ(std::string("keep me\n"), readFile(blocker));
+#if defined(_WIN32)
+    // Either separator separates on Windows.
+    makeParentDirectories(base + "\\w\\v\\leaf");
+    CHECK(pathKind(base + "/w/v") == trace_client::detail::PATH_OTHER);
+    removeDirectory(base + "/w/v");
+    removeDirectory(base + "/w");
+#endif
+    std::remove(blocker.c_str());
+    removeDirectory(path);
+    removeDirectory(base + "/a/b");
+    removeDirectory(base + "/a");
+    removeDirectory(base);
+    CHECK(pathKind(base) == trace_client::detail::PATH_MISSING);
+}
+
 static void installIdFromFilePersistsOnceAndReusesIt() {
     std::string base = tempBase();
     std::string path = base + "/nested/dir/install-id";
@@ -1414,6 +1464,8 @@ int main() {
         {"theCallersTagsAreNeverModified", theCallersTagsAreNeverModified},
         {"aBlankOrOverlongVersionIsRejected", aBlankOrOverlongVersionIsRejected},
         {"randomUuidIsAVersion4Uuid", randomUuidIsAVersion4Uuid},
+        {"pathKindTellsAMissingPathFromAFileFromAnythingElse", pathKindTellsAMissingPathFromAFileFromAnythingElse},
+        {"makeParentDirectoriesCreatesEveryAncestorButNotThePathItself", makeParentDirectoriesCreatesEveryAncestorButNotThePathItself},
         {"installIdFromFilePersistsOnceAndReusesIt", installIdFromFilePersistsOnceAndReusesIt},
         {"installIdFromFileReadsTheFirstValidLine", installIdFromFileReadsTheFirstValidLine},
         {"installIdFromFileFallsBackToMemoryWhenThePathIsUnusable", installIdFromFileFallsBackToMemoryWhenThePathIsUnusable},
