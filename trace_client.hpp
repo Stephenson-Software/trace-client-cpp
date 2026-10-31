@@ -98,7 +98,7 @@ typedef std::function<void(const std::string &)> Logger;
 
 /** How many reports may wait to be sent before new ones are dropped. */
 static const std::size_t QUEUE_CAPACITY = 256;
-/** Per-request timeout, and the most close() waits for queued reports. */
+/** Per-request timeout, and the most close() waits for queued reports by default. */
 static const double TIMEOUT_SECONDS = 5.0;
 /** The server's limits: tags per report, and length of a name or tag key/value. */
 static const std::size_t MAX_TAGS = 32;
