@@ -493,7 +493,7 @@ static void aFullQueueIsLoggedOnTheThreadThatCalledReport() {
     Log log;
     trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k", true, log.logger());
     const std::size_t flood = trace_client::QUEUE_CAPACITY * 3;
-    std::thread flooder([&client, flood] {
+    std::thread flooder([&] {
         for (std::size_t i = 0; i < flood; ++i) client.report("flood");
     });
     std::thread::id reporter = flooder.get_id();
