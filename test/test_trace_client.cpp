@@ -254,16 +254,26 @@ private:
 struct Log {
     std::mutex mutex;
     std::vector<std::string> lines;
+    std::vector<std::thread::id> threads; // who called the logger, line for line
     trace_client::Logger logger() {
         return [this](const std::string &line) {
             std::lock_guard<std::mutex> lock(mutex);
             lines.push_back(line);
+            threads.push_back(std::this_thread::get_id());
         };
     }
     std::size_t count(const std::string &needle) {
         std::lock_guard<std::mutex> lock(mutex);
         std::size_t n = 0;
         for (std::size_t i = 0; i < lines.size(); ++i) if (lines[i].find(needle) != std::string::npos) ++n;
+        return n;
+    }
+    std::size_t countOn(const std::string &needle, std::thread::id thread) {
+        std::lock_guard<std::mutex> lock(mutex);
+        std::size_t n = 0;
+        for (std::size_t i = 0; i < lines.size(); ++i) {
+            if (threads[i] == thread && lines[i].find(needle) != std::string::npos) ++n;
+        }
         return n;
     }
 };
@@ -448,6 +458,51 @@ static void theLoggerIsNeverCalledOnceCloseReturns() {
     server.release();
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
     CHECK_EQ(atClose, log.count("[trace]"));
+}
+
+static void aFailedDeliveryIsLoggedOnTheClientsOwnThread() {
+    // Both kinds of failed delivery: the server said no, and nothing answered.
+    int port;
+    {
+        StubServer closed; // bind a port, then let it go
+        port = std::atoi(closed.baseUrl().substr(closed.baseUrl().rfind(':') + 1).c_str());
+    }
+    StubServer server;
+    server.status = 500;
+    Log log;
+    {
+        trace_client::TraceClient rejected(server.baseUrl(), "MyGame", "1.2.3", "k", true, log.logger());
+        rejected.report("startup");
+        rejected.close();
+        trace_client::TraceClient unreachable("http://127.0.0.1:" + std::to_string(port), "MyGame", "1.2.3", "k", true, log.logger());
+        unreachable.report("startup");
+        unreachable.close();
+    }
+    std::thread::id reporter = std::this_thread::get_id();
+    CHECK_EQ(1u, log.count("answered 500"));
+    CHECK_EQ(0u, log.countOn("answered 500", reporter));
+    CHECK_EQ(1u, log.count("could not deliver"));
+    CHECK_EQ(0u, log.countOn("could not deliver", reporter));
+}
+
+static void aFullQueueIsLoggedOnTheThreadThatCalledReport() {
+    // Reported from a thread of its own, so "the reporting thread" cannot be
+    // confused with the one that built the client and will close it.
+    StubServer server;
+    server.hold(); // the sender waits on the first report
+    Log log;
+    trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k", true, log.logger());
+    const std::size_t flood = trace_client::QUEUE_CAPACITY * 3;
+    std::thread flooder([&] {
+        for (std::size_t i = 0; i < flood; ++i) client.report("flood");
+    });
+    std::thread::id reporter = flooder.get_id();
+    flooder.join();
+    std::size_t full = log.count("queue full");
+    CHECK(full >= flood - trace_client::QUEUE_CAPACITY - 1);
+    CHECK_EQ(full, log.countOn("queue full", reporter));
+    server.release();
+    client.close(1.0);
 }
 
 static void missingCurlIsAnUnreachableServer() {
@@ -1426,6 +1481,8 @@ int main() {
         {"aLoggerMayItselfReport", aLoggerMayItselfReport},
         {"aLoggerMayReportWhileCloseIsRunning", aLoggerMayReportWhileCloseIsRunning},
         {"theLoggerIsNeverCalledOnceCloseReturns", theLoggerIsNeverCalledOnceCloseReturns},
+        {"aFailedDeliveryIsLoggedOnTheClientsOwnThread", aFailedDeliveryIsLoggedOnTheClientsOwnThread},
+        {"aFullQueueIsLoggedOnTheThreadThatCalledReport", aFullQueueIsLoggedOnTheThreadThatCalledReport},
         {"missingCurlIsAnUnreachableServer", missingCurlIsAnUnreachableServer},
         {"disabledClientSendsNothing", disabledClientSendsNothing},
         {"disabledReasonIsEmptyWhenTheClientReports", disabledReasonIsEmptyWhenTheClientReports},
