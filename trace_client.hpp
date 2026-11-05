@@ -1104,9 +1104,9 @@ public:
         try {
             std::unique_lock<std::mutex> lock(shared->mutex);
             if (insideLogger) {
-                // The sending thread cannot finish while the logger runs: it
-                // is either running it or waiting its turn to. Nothing here
-                // touches this object, which the program may now be destroying.
+                // Waiting could never end: the sending thread may be running
+                // the logger, or waiting its turn to. Nothing here touches
+                // this object, which the program may now be destroying.
                 shared->abandon();
                 lock.unlock();
                 shared->forgetLogger();
