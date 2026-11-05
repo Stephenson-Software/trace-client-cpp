@@ -92,7 +92,9 @@ typedef std::map<std::string, std::string> Tags;
 
 /**
  * Where dropped reports are mentioned. Called on the client's own thread for
- * failed deliveries and on the reporting thread for a full queue.
+ * failed deliveries and on the reporting thread for a full queue. It may call
+ * report(), and a drop that causes is not mentioned to it; see close() for
+ * calling that.
  */
 typedef std::function<void(const std::string &)> Logger;
 
@@ -418,13 +420,14 @@ struct Shared {
     bool closing;   // close() was called: send what is queued, then stop
     bool abandoned; // close() gave up waiting: stop now, drop the rest
     bool done;      // the sending thread has stopped
+    bool forgotten; // the logger closed the client: clear it when it returns
 #if defined(TRACE_CLIENT_POSIX)
     pid_t child; // the curl process in flight, or 0
 #elif defined(_WIN32) && !defined(TRACE_CLIENT_USE_LIBCURL)
     HANDLE child; // the curl process in flight, or NULL
 #endif
 
-    Shared() : closing(false), abandoned(false), done(false)
+    Shared() : closing(false), abandoned(false), done(false), forgotten(false)
 #if defined(TRACE_CLIENT_POSIX)
         , child(0)
 #elif defined(_WIN32) && !defined(TRACE_CLIENT_USE_LIBCURL)
@@ -432,22 +435,60 @@ struct Shared {
 #endif
     {}
 
-    // Guards logger alone, so a logger may itself call report(). close()
+    // Guards logger and forgotten, and is held while the logger runs. close()
     // clears the logger under it: once close() returns, the program's logger
     // is never called again, even by a thread that close() gave up on.
     std::mutex logMutex;
+    std::thread::id loggerThread; // running the logger now, if any; guarded by mutex
+
+    void setLoggerThread(std::thread::id thread) {
+        std::lock_guard<std::mutex> lock(mutex);
+        loggerThread = thread;
+    }
+
+    /**
+     * Whether the logger is what called this. That thread already holds
+     * logMutex, and locking it again would hang: whatever a logger calls has
+     * to check here first.
+     */
+    bool inLogger() {
+        try {
+            std::lock_guard<std::mutex> lock(mutex);
+            return loggerThread == std::this_thread::get_id();
+        } catch (...) {
+            return false;
+        }
+    }
 
     void log(const std::string &message) {
+        // A report from inside the logger that finds the queue full is
+        // dropped unmentioned: mentioning it would call the logger from
+        // inside itself, once per drop if the logger always reports.
+        if (inLogger()) return;
         try {
             std::lock_guard<std::mutex> lock(logMutex);
-            if (logger) logger("[trace] " + message);
+            if (!logger) return;
+            setLoggerThread(std::this_thread::get_id());
+            try {
+                logger("[trace] " + message);
+            } catch (...) {
+                // a logger that throws must not stop the sending thread
+            }
+            setLoggerThread(std::thread::id());
+            if (forgotten) logger = Logger();
         } catch (...) {
-            // a logger that throws must not stop the sending thread
         }
     }
 
     void forgetLogger() {
         try {
+            // The logger closed the client. It cannot be destroyed while it
+            // runs, so log() clears it on the way out; logMutex is this
+            // thread's already.
+            if (inLogger()) {
+                forgotten = true;
+                return;
+            }
             std::lock_guard<std::mutex> lock(logMutex);
             logger = Logger();
         } catch (...) {
@@ -461,6 +502,14 @@ struct Shared {
 #elif defined(_WIN32) && !defined(TRACE_CLIENT_USE_LIBCURL)
         if (child != NULL) ::TerminateProcess(child, 1);
 #endif
+    }
+
+    /** Called by close() with the mutex held: stop now, drop the rest. */
+    void abandon() {
+        abandoned = true;
+        queue.clear();
+        killChild();
+        changed.notify_all();
     }
 };
 
@@ -1034,19 +1083,35 @@ public:
      * timeoutSeconds in total to be sent first; whatever is still in flight
      * then is abandoned. A NaN or negative timeoutSeconds waits for nothing;
      * an infinite one waits until the queue is sent. Safe to call more than
-     * once, and on a disabled client.
+     * once, and on a disabled client. Called from inside the Logger it waits
+     * for nothing, whatever timeoutSeconds says, and abandons what is queued.
      */
     void close(double timeoutSeconds = TIMEOUT_SECONDS) {
         std::shared_ptr<detail::Shared> shared;
+        bool insideLogger = false;
         try {
             std::lock_guard<std::mutex> lock(sharedMutex_);
             shared.swap(shared_);
+            insideLogger = shared && shared->inLogger();
+            // Under the lock: a second close() finds shared_ empty and returns
+            // at once, and the destructor it may be part of must not find
+            // thread_ still joinable.
+            if (insideLogger) thread_.detach();
         } catch (...) {
             return;
         }
         if (!shared) return;
         try {
             std::unique_lock<std::mutex> lock(shared->mutex);
+            if (insideLogger) {
+                // Waiting could never end: the sending thread may be running
+                // the logger, or waiting its turn to. Nothing here touches
+                // this object, which the program may now be destroying.
+                shared->abandon();
+                lock.unlock();
+                shared->forgetLogger();
+                return;
+            }
             shared->closing = true;
             shared->changed.notify_all();
             // NaN and negative bounds wait for nothing. Past about three years
@@ -1065,10 +1130,7 @@ public:
                 lock.unlock();
                 thread_.join();
             } else {
-                shared->abandoned = true;
-                shared->queue.clear();
-                shared->killChild();
-                shared->changed.notify_all();
+                shared->abandon();
                 lock.unlock();
                 shared->forgetLogger();
                 // The thread holds its own reference to the shared state, so
@@ -1076,7 +1138,7 @@ public:
                 thread_.detach();
             }
         } catch (...) {
-            if (thread_.joinable()) thread_.detach();
+            if (!insideLogger && thread_.joinable()) thread_.detach();
         }
     }
 
