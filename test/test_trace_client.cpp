@@ -10,9 +10,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <iterator>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <new>
 #include <condition_variable>
@@ -503,6 +505,129 @@ static void aFullQueueIsLoggedOnTheThreadThatCalledReport() {
     CHECK_EQ(full, log.countOn("queue full", reporter));
     server.release();
     client.close(1.0);
+}
+
+// Runs body on a thread of its own, and says whether it finished in time. A
+// hang then fails a check instead of the suite: the stuck thread is left
+// behind with everything on its stack, so body should own what it uses.
+static bool finishesWithin(double seconds, const std::function<void()> &body) {
+    struct State {
+        std::mutex mutex;
+        std::condition_variable changed;
+        bool done;
+        State() : done(false) {}
+    };
+    std::shared_ptr<State> state = std::make_shared<State>();
+    std::thread([state, body] {
+        body();
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->done = true;
+        state->changed.notify_all();
+    }).detach();
+    std::unique_lock<std::mutex> lock(state->mutex);
+    return state->changed.wait_for(lock, std::chrono::milliseconds(static_cast<long long>(seconds * 1000)),
+                                   [&] { return state->done; });
+}
+
+static void aLoggerMayReportWhileTheQueueIsFull() {
+    // The logger hears of a full queue on the reporting thread, and its own
+    // report finds the queue just as full. It reports on every message, so a
+    // drop mentioned back to it would recurse rather than hear one per flood.
+    CHECK(finishesWithin(30, [] {
+        StubServer server;
+        server.hold(); // the sender waits on the first report
+        trace_client::TraceClient *self = NULL;
+        std::atomic<std::size_t> heard(0);
+        trace_client::Logger reporting = [&](const std::string &) {
+            ++heard;
+            self->report("from-logger");
+        };
+        trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k", true, reporting);
+        self = &client;
+        const std::size_t flood = trace_client::QUEUE_CAPACITY * 2;
+        for (std::size_t i = 0; i < flood; ++i) client.report("flood");
+        CHECK(heard >= flood - trace_client::QUEUE_CAPACITY - 1);
+        CHECK(heard <= flood);
+        server.release();
+        client.close(0.5);
+    }));
+}
+
+static void aLoggerMayFillTheQueueFromTheSendingThread() {
+    // The same lock reached from the other thread the logger runs on, where a
+    // hang would also take close() with it.
+    CHECK(finishesWithin(30, [] {
+        StubServer server;
+        server.status = 500; // the first report is a drop, so it reaches the logger
+        trace_client::TraceClient *self = NULL;
+        std::atomic<bool> filled(false);
+        std::atomic<bool> returned(false);
+        std::atomic<std::size_t> full(0);
+        trace_client::Logger filling = [&](const std::string &line) {
+            if (line.find("queue full") != std::string::npos) ++full;
+            if (filled.exchange(true)) return;
+            for (std::size_t i = 0; i < trace_client::QUEUE_CAPACITY + 2; ++i) self->report("flood");
+            returned = true;
+        };
+        trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k", true, filling);
+        self = &client;
+        client.report("startup");
+        std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        while (!returned && secondsSince(start) < 10) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        CHECK(returned);
+        client.close(0.5);
+        CHECK_EQ(0u, full.load());
+    }));
+}
+
+static void aLoggerMayCloseFromTheSendingThread() {
+    // close() cannot wait for the thread it is running on, so it does not:
+    // what was queued behind the failed report is dropped and nothing more
+    // reaches the logger, however long the bound it was given.
+    CHECK(finishesWithin(30, [] {
+        StubServer server;
+        server.status = 500;
+        trace_client::TraceClient *self = NULL;
+        std::atomic<int> calls(0);
+        std::atomic<bool> returned(false);
+        trace_client::Logger closing = [&](const std::string &) {
+            if (++calls > 1) return;
+            self->close(std::numeric_limits<double>::infinity());
+            returned = true;
+        };
+        trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k", true, closing);
+        self = &client;
+        client.report("startup");
+        client.report("second");
+        std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        while (!returned && secondsSince(start) < 10) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        CHECK(returned);
+        CHECK(!client.isEnabled());
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        CHECK_EQ(1, calls.load());
+    }));
+}
+
+static void aLoggerMayCloseFromTheReportingThread() {
+    // Here the sender is mid-request: abandoned and killed, it has a failed
+    // delivery to mention, which the closed client's logger must not hear.
+    CHECK(finishesWithin(30, [] {
+        StubServer server;
+        server.hold();
+        trace_client::TraceClient *self = NULL;
+        std::atomic<int> calls(0);
+        trace_client::Logger closing = [&](const std::string &) {
+            ++calls;
+            self->close(std::numeric_limits<double>::infinity());
+        };
+        trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k", true, closing);
+        self = &client;
+        for (std::size_t i = 0; i < trace_client::QUEUE_CAPACITY + 2; ++i) client.report("flood");
+        CHECK(!client.isEnabled());
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        CHECK_EQ(1, calls.load());
+        server.release();
+    }));
 }
 
 static void missingCurlIsAnUnreachableServer() {
@@ -1483,6 +1608,10 @@ int main() {
         {"theLoggerIsNeverCalledOnceCloseReturns", theLoggerIsNeverCalledOnceCloseReturns},
         {"aFailedDeliveryIsLoggedOnTheClientsOwnThread", aFailedDeliveryIsLoggedOnTheClientsOwnThread},
         {"aFullQueueIsLoggedOnTheThreadThatCalledReport", aFullQueueIsLoggedOnTheThreadThatCalledReport},
+        {"aLoggerMayReportWhileTheQueueIsFull", aLoggerMayReportWhileTheQueueIsFull},
+        {"aLoggerMayFillTheQueueFromTheSendingThread", aLoggerMayFillTheQueueFromTheSendingThread},
+        {"aLoggerMayCloseFromTheSendingThread", aLoggerMayCloseFromTheSendingThread},
+        {"aLoggerMayCloseFromTheReportingThread", aLoggerMayCloseFromTheReportingThread},
         {"missingCurlIsAnUnreachableServer", missingCurlIsAnUnreachableServer},
         {"disabledClientSendsNothing", disabledClientSendsNothing},
         {"disabledReasonIsEmptyWhenTheClientReports", disabledReasonIsEmptyWhenTheClientReports},
