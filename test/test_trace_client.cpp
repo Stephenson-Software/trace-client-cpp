@@ -149,6 +149,7 @@ public:
     std::string baseUrl() const { return "http://127.0.0.1:" + std::to_string(port); }
 
     void hold() { std::lock_guard<std::mutex> lock(mutex); held = true; }
+    void redirectTo(const std::string &url) { std::lock_guard<std::mutex> lock(mutex); location = url; }
     void release() {
         std::lock_guard<std::mutex> lock(mutex);
         held = false;
@@ -231,13 +232,16 @@ private:
             body.append(buffer, static_cast<std::size_t>(n));
         }
         request.body = body;
+        std::string extraHeader;
         {
             std::unique_lock<std::mutex> lock(mutex);
             changed.wait_for(lock, std::chrono::seconds(10), [&] { return !held; });
             requests.push_back(request);
             changed.notify_all();
+            if (!location.empty()) extraHeader = "Location: " + location + "\r\n";
         }
-        std::string response = "HTTP/1.1 " + std::to_string(status.load()) + " Stub\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        std::string response = "HTTP/1.1 " + std::to_string(status.load()) + " Stub\r\n" + extraHeader
+            + "Content-Length: 0\r\nConnection: close\r\n\r\n";
         ::send(connection, response.data(), static_cast<int>(response.size()), 0);
         CLOSE_SOCKET(connection);
     }
@@ -245,6 +249,7 @@ private:
     std::mutex mutex;
     std::condition_variable changed;
     std::vector<Request> requests;
+    std::string location;
     bool held;
     std::atomic<bool> stopping;
     socket_t listener;
@@ -1589,6 +1594,181 @@ static void theInstallTagNeverPassesTheTagCap() {
     }
 }
 
+// ---------------------------------------------------------------- how a report is sent
+
+static void onlyA201IsSuccess() {
+    StubServer server;
+    Log log;
+    const int others[] = {200, 202, 204, 400, 500};
+    const std::size_t count = sizeof others / sizeof others[0];
+    for (std::size_t i = 0; i < count; ++i) {
+        server.status = others[i];
+        trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k", true, log.logger());
+        client.report("startup");
+        client.close();
+        CHECK_EQ(1u, log.count("answered " + std::to_string(others[i])));
+    }
+    server.status = 201;
+    trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k", true, log.logger());
+    client.report("startup");
+    client.close();
+    CHECK_EQ(count + 1, server.received().size());
+    CHECK_EQ(count, log.count("[trace]"));
+}
+
+static void aRedirectIsAnAnswerAndIsNotFollowed() {
+    StubServer target;
+    StubServer server;
+    server.status = 302;
+    server.redirectTo(target.baseUrl() + "/api/metrics");
+    Log log;
+    trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k", true, log.logger());
+    client.report("startup");
+    client.close();
+    CHECK_EQ(1u, server.received().size());
+    CHECK_EQ(0u, target.received().size());
+    CHECK_EQ(1u, log.count("answered 302"));
+}
+
+static void aBaseUrlOfAnotherProtocolIsNeverTried() {
+    Log log;
+    trace_client::TraceClient client("file:///nonexistent-trace-client-test", "MyGame", "1.2.3", "k", true, log.logger());
+    client.report("startup");
+    client.close();
+    // Allowed to try, curl would get as far as the missing file and say so
+    // with another code.
+#if defined(TRACE_CLIENT_USE_LIBCURL)
+    CHECK_EQ(1u, log.count("Unsupported protocol"));
+#else
+    CHECK_EQ(1u, log.count("curl exited with 1"));
+#endif
+}
+
+#if defined(TRACE_CLIENT_POSIX)
+// A shell script found first on PATH as "curl" for as long as this lives, so a
+// test can see what curl is given and choose how it ends. The script runs with
+// $here set to its directory, for files file() can then find.
+class FakeCurl {
+public:
+    explicit FakeCurl(const std::string &script) : directory(tempBase()) {
+        const char *path = std::getenv("PATH");
+        original = path ? path : "";
+        writeFile(file("curl"), "#!/bin/sh\nhere=${0%/*}\n" + script + "\n");
+        ::chmod(file("curl").c_str(), 0755);
+        setEnv("PATH", (directory + ":" + original).c_str());
+    }
+
+    ~FakeCurl() {
+        setEnv("PATH", original.c_str());
+        const char *names[] = {"curl", "argv", "config", "pid"};
+        for (std::size_t i = 0; i < sizeof names / sizeof names[0]; ++i) std::remove(file(names[i]).c_str());
+        removeDirectory(directory);
+    }
+
+    std::string file(const std::string &name) const { return directory + "/" + name; }
+
+private:
+    FakeCurl(const FakeCurl &);
+    FakeCurl &operator=(const FakeCurl &);
+
+    std::string directory;
+    std::string original;
+};
+
+static void theCommandLineIsFixedAndTheRequestGoesOnStandardInput() {
+    FakeCurl curl("printf '%s\\n' \"$@\" > \"$here/argv\"\ncat > \"$here/config\"\nprintf 201");
+    Log log;
+    {
+        trace_client::TraceClient client("http://127.0.0.1:9", "MyGame", "1.2.3", "the-secret-key", true, log.logger());
+        client.report("startup");
+        client.close();
+    }
+    CHECK_EQ(std::string("-q\n--silent\n--config\n-\n"), readFile(curl.file("argv")));
+    std::string config = readFile(curl.file("config"));
+    CHECK(config.find("url = \"http://127.0.0.1:9/api/metrics\"\n") != std::string::npos);
+    CHECK(config.find("Authorization: Bearer the-secret-key") != std::string::npos);
+    std::string body = trace_client::detail::json("MyGame", "startup", false, 0, {{"version", "1.2.3"}});
+    CHECK(config.find("data-binary = " + trace_client::detail::curlQuote(body) + "\n") != std::string::npos);
+    CHECK_EQ(0u, log.count("[trace]"));
+}
+
+static void theLoggerHearsHowCurlEnded() {
+    struct Outcome {
+        const char *script;
+        const char *heard;
+    };
+    const Outcome outcomes[] = {
+        {"exit 3", "curl exited with 3"},
+        {"exit 127", "could not run curl"},
+        {"printf 000; exit 7", "curl exited with 7"}, // curl's answer when nothing answered it
+        {"printf 'not a status'", "curl exited with 0"},
+        {"printf 503", "answered 503"},
+        {"printf 503; exit 22", "answered 503"}, // a status is believed whatever the exit
+    };
+    for (std::size_t i = 0; i < sizeof outcomes / sizeof outcomes[0]; ++i) {
+        FakeCurl curl(outcomes[i].script);
+        Log log;
+        {
+            trace_client::TraceClient client("http://127.0.0.1:9", "MyGame", "1.2.3", "k", true, log.logger());
+            client.report("startup");
+            client.close();
+        }
+        CHECK_EQ(1u, log.count(outcomes[i].heard));
+        CHECK_EQ(1u, log.count("[trace]"));
+    }
+}
+
+static void aCurlThatDiesEarlyIsAnErrorNotASignal() {
+    // The request is far more than a pipe holds, so curl is gone while it is
+    // still being written. A SIGPIPE would end this whole test program.
+    FakeCurl curl("exit 3");
+    Log log;
+    {
+        trace_client::TraceClient client("http://127.0.0.1:9", std::string(1024 * 1024, 'a'), "1.2.3", "k", true, log.logger());
+        client.report("startup");
+        client.close();
+    }
+    CHECK_EQ(1u, log.count("curl exited with 3"));
+}
+
+static void curlStartsWithSigpipeUnblockedAndAtItsDefault() {
+    // The sending thread blocks SIGPIPE and this host ignores it, and curl
+    // would inherit both. Only with neither does the script's own signal end
+    // it before the 201.
+    FakeCurl curl("kill -PIPE $$\nprintf 201");
+    Log log;
+    void (*previous)(int) = ::signal(SIGPIPE, SIG_IGN);
+    {
+        trace_client::TraceClient client("http://127.0.0.1:9", "MyGame", "1.2.3", "k", true, log.logger());
+        client.report("startup");
+        client.close();
+    }
+    ::signal(SIGPIPE, previous);
+    CHECK_EQ(1u, log.count("curl did not finish"));
+}
+
+static void closeKillsTheCurlItGaveUpOn() {
+    FakeCurl curl("echo $$ > \"$here/pid\"\nexec sleep 30");
+    trace_client::TraceClient client("http://127.0.0.1:9", "MyGame", "1.2.3", "k");
+    client.report("startup");
+    pid_t pid = 0;
+    std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    while (pid <= 0 && secondsSince(start) < 10) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        pid = std::atoi(readFile(curl.file("pid")).c_str());
+    }
+    CHECK(pid > 0);
+    client.close(0.1);
+    if (pid <= 0) return;
+    // The abandoned sending thread reaps it, a moment after close() returns.
+    start = std::chrono::steady_clock::now();
+    while (::kill(pid, 0) == 0 && secondsSince(start) < 10) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    CHECK(::kill(pid, 0) != 0);
+}
+#endif
+
 int main() {
 #if defined(_WIN32)
     WSADATA wsa;
@@ -1661,6 +1841,16 @@ int main() {
         {"aBlankInstallIdMeansNoneAndAnOverlongOneIsRejected", aBlankInstallIdMeansNoneAndAnOverlongOneIsRejected},
         {"anEventsOwnInstallTagWins", anEventsOwnInstallTagWins},
         {"theInstallTagNeverPassesTheTagCap", theInstallTagNeverPassesTheTagCap},
+        {"onlyA201IsSuccess", onlyA201IsSuccess},
+        {"aRedirectIsAnAnswerAndIsNotFollowed", aRedirectIsAnAnswerAndIsNotFollowed},
+        {"aBaseUrlOfAnotherProtocolIsNeverTried", aBaseUrlOfAnotherProtocolIsNeverTried},
+#if defined(TRACE_CLIENT_POSIX)
+        {"theCommandLineIsFixedAndTheRequestGoesOnStandardInput", theCommandLineIsFixedAndTheRequestGoesOnStandardInput},
+        {"theLoggerHearsHowCurlEnded", theLoggerHearsHowCurlEnded},
+        {"aCurlThatDiesEarlyIsAnErrorNotASignal", aCurlThatDiesEarlyIsAnErrorNotASignal},
+        {"curlStartsWithSigpipeUnblockedAndAtItsDefault", curlStartsWithSigpipeUnblockedAndAtItsDefault},
+        {"closeKillsTheCurlItGaveUpOn", closeKillsTheCurlItGaveUpOn},
+#endif
     };
     const std::size_t count = sizeof tests / sizeof tests[0];
     for (std::size_t i = 0; i < count; ++i) {
