@@ -171,6 +171,8 @@ can change what that program does, so the details are strict:
   include an injection attempt through each of them.
 - `proto = "=http,https"` stops a malformed base URL from reaching any other
   protocol; redirects are not followed.
+- `globoff` stops `{}` or `[]` in a base URL from being expanded into several
+  requests: one report is one request.
 - The key is never on a command line, so it does not show up in `ps`.
 - On Windows `curl.exe` is taken from `System32`, or else from the directories
   on `PATH` — never from the current directory. It runs with
