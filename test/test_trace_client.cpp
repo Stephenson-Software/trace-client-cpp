@@ -1005,6 +1005,7 @@ static void curlConfigFixesEveryOptionAndQuotesEveryValue() {
     shared.application = "My\nGame";
     std::string expected =
         "url = \"https://trace.example.org/api/metrics\"\n"
+        "globoff\n"
         "proto = \"=http,https\"\n"
         "header = \"Content-Type: application/json; charset=utf-8\"\n"
         "header = \"Expect:\"\n"
@@ -1069,6 +1070,21 @@ static void aNewlineInTheBaseUrlCannotAddACurlOption() {
             CHECK(lower(got[r].headerLines[i]).find("x-injected") != 0);
         }
     }
+}
+
+static void aBaseUrlIsNeverExpandedIntoSeveralRequests() {
+    StubServer server;
+    Log log;
+    // Left to curl's URL globbing, this is two requests, to /a and to /b, and
+    // two answers run together into one status that cannot be read.
+    trace_client::TraceClient client(server.baseUrl() + "/{a,b}", "MyGame", "1.2.3", "k", true, log.logger());
+    client.report("startup");
+    client.close();
+    std::vector<Request> got = server.received();
+    CHECK_EQ(1u, got.size());
+    if (got.empty()) return;
+    CHECK_EQ(std::string("/{a,b}/api/metrics"), got[0].path);
+    CHECK_EQ(0u, log.count("[trace]"));
 }
 
 static void queueIsBoundedAndDropsRatherThanGrows() {
@@ -1817,6 +1833,7 @@ int main() {
         {"isValidInstallIdAcceptsOnlyTheDocumentedCharacters", isValidInstallIdAcceptsOnlyTheDocumentedCharacters},
         {"nothingTheProgramPassesCanChangeWhereOrWhatCurlSends", nothingTheProgramPassesCanChangeWhereOrWhatCurlSends},
         {"aNewlineInTheBaseUrlCannotAddACurlOption", aNewlineInTheBaseUrlCannotAddACurlOption},
+        {"aBaseUrlIsNeverExpandedIntoSeveralRequests", aBaseUrlIsNeverExpandedIntoSeveralRequests},
         {"queueIsBoundedAndDropsRatherThanGrows", queueIsBoundedAndDropsRatherThanGrows},
         {"closeSendsWhatWasJustQueuedBeforeStopping", closeSendsWhatWasJustQueuedBeforeStopping},
         {"destructorClosesToo", destructorClosesToo},
