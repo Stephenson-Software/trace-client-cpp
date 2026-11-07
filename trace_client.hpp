@@ -525,6 +525,7 @@ inline std::string curlConfig(const Shared &shared, const std::string &body) {
     timeout << timeoutWholeSeconds();
     std::string config;
     config += "url = " + curlQuote(shared.endpoint) + "\n";
+    config += "globoff\n"; // {} and [] in a URL would otherwise mean several requests
     config += "proto = \"=http,https\"\n";
     config += "header = \"Content-Type: application/json; charset=utf-8\"\n";
     config += "header = \"Expect:\"\n"; // no 100-continue round trip for a larger body
