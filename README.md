@@ -128,6 +128,9 @@ or `"no key"`, or `"unavailable"` when the client cannot send at all (a
 browser build, a blank base URL, application name or version, a version or
 explicit installation ID over 255 bytes, or the thread could not be started) —
 and is empty when the client reports, so a program can print it.
+`client.isEnabled()` says whether `report` will send anything at all. The two
+part ways after `close()`: `isEnabled()` turns false, while `disabledReason()`
+is unchanged by `close()` — still empty for a client that was reporting.
 A default-constructed `TraceClient` is disabled with reason `"config"`.
 A disabled client also never makes up or writes an
 [installation ID](#every-event-carries-a-random-installation-id).
