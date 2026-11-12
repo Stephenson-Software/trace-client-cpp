@@ -792,6 +792,22 @@ static void reportIgnoresABlankName() {
     CHECK_EQ(0u, server.received().size());
 }
 
+static void aBlankNameIsNeverMentionedToTheLogger() {
+    StubServer server;
+    server.status = 500; // the report that does go out is a drop, so the logger is seen to be listening
+    Log log;
+    trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k", true, log.logger());
+    client.report("");
+    client.report(" \t\r\n\v\f", {{"level", "forest"}});
+    client.report("  ", 3.0, {{"level", "forest"}});
+    client.report("startup");
+    client.close();
+    CHECK_EQ(1u, server.received().size());
+    CHECK_EQ(1u, log.lines.size());
+    CHECK_EQ(1u, log.count("answered 500"));
+    CHECK_EQ(1u, log.count("\"name\":\"startup\""));
+}
+
 static void jsonIsEscapedAndCleaned() {
     using trace_client::detail::json;
     CHECK_EQ(std::string("{\"application\":\"A\\\"pp\",\"name\":\"n\\\\\",\"tags\":{\"ok\":\"line\\nbreak\\t\\u0001\"}}"),
@@ -1819,6 +1835,7 @@ int main() {
         {"aBlankBaseUrlIsUnavailable", aBlankBaseUrlIsUnavailable},
         {"surroundingWhitespaceIsNotSent", surroundingWhitespaceIsNotSent},
         {"reportIgnoresABlankName", reportIgnoresABlankName},
+        {"aBlankNameIsNeverMentionedToTheLogger", aBlankNameIsNeverMentionedToTheLogger},
         {"jsonIsEscapedAndCleaned", jsonIsEscapedAndCleaned},
         {"tagsAreHeldToTheServerLimits", tagsAreHeldToTheServerLimits},
         {"cleanUtf8ReplacesEveryMalformedSequence", cleanUtf8ReplacesEveryMalformedSequence},
