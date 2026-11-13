@@ -1267,6 +1267,38 @@ static void closeIsPromptAndIdempotent() {
     client.report("after-close"); // a no-op, not a crash
 }
 
+static void closeLeavesTheReasonAsItWasAndSendsNothingMore() {
+    StubServer server;
+    trace_client::TraceClient reporting(server.baseUrl(), "MyGame", "1.2.3", "k");
+    reporting.report("startup");
+    reporting.close();
+    CHECK_EQ(1u, server.received().size());
+    reporting.report("after-close");
+    reporting.report("after-close", 1.0, {{"level", "forest"}});
+    reporting.close();
+    CHECK(!reporting.isEnabled());
+    CHECK(reporting.disabledReason().empty());
+
+    // A disabled client keeps the reason it was given, whichever it was.
+    trace_client::TraceClient off(server.baseUrl(), "MyGame", "1.2.3", "k", false);
+    trace_client::TraceClient keyless(server.baseUrl(), "MyGame", "1.2.3", " ");
+    trace_client::TraceClient unnamed(server.baseUrl(), " ", "1.2.3", "k");
+    trace_client::TraceClient nothing;
+    setEnv("DO_NOT_TRACK", "1");
+    trace_client::TraceClient environment(server.baseUrl(), "MyGame", "1.2.3", "k");
+    cleanEnvironment(); // close() must not look again
+    trace_client::TraceClient *disabled[] = {&off, &keyless, &unnamed, &nothing, &environment};
+    const char *reasons[] = {"config", "no key", "unavailable", "config", "environment"};
+    for (std::size_t i = 0; i < sizeof reasons / sizeof reasons[0]; ++i) {
+        disabled[i]->close();
+        disabled[i]->report("after-close");
+        CHECK(!disabled[i]->isEnabled());
+        CHECK_EQ(std::string(reasons[i]), disabled[i]->disabledReason());
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    CHECK_EQ(1u, server.received().size());
+}
+
 static void closeWithABoundTooLongForTheClockSendsEverythingQueued() {
     // Infinity, or a bound whose deadline the clock cannot hold, means "as
     // long as it takes" -- not a deadline that wrapped round into the past.
@@ -1857,6 +1889,7 @@ int main() {
         {"everyAllocationTheConstructorMakesMayFailWithoutAborting", everyAllocationTheConstructorMakesMayFailWithoutAborting},
         {"closeReturnsWithinTheTimeoutWhenTheServerHangs", closeReturnsWithinTheTimeoutWhenTheServerHangs},
         {"closeIsPromptAndIdempotent", closeIsPromptAndIdempotent},
+        {"closeLeavesTheReasonAsItWasAndSendsNothingMore", closeLeavesTheReasonAsItWasAndSendsNothingMore},
         {"closeWithABoundTooLongForTheClockSendsEverythingQueued", closeWithABoundTooLongForTheClockSendsEverythingQueued},
         {"closeWithANegativeOrNanBoundWaitsForNothing", closeWithANegativeOrNanBoundWaitsForNothing},
         {"reportTagsEveryEventWithTheProgramVersionTrimmed", reportTagsEveryEventWithTheProgramVersionTrimmed},
