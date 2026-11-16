@@ -1614,6 +1614,29 @@ static void aBlankInstallIdMeansNoneAndAnOverlongOneIsRejected() {
     }
 }
 
+static void aBlankInstallIdFileMeansNone() {
+    // A blank path is no file: no ID is made up, and nothing is written -- not
+    // even a file named by the whitespace, relative to the working directory.
+    StubServer server;
+    const char *const blanks[] = {"", " \t "};
+    for (std::size_t i = 0; i < sizeof blanks / sizeof blanks[0]; ++i) {
+        trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k",
+                                         trace_client::InstallId::fromFile(blanks[i]));
+        CHECK(client.isEnabled());
+        CHECK(client.installId().empty());
+        client.report("startup");
+        CHECK(server.waitFor(i + 1, 10));
+        client.close();
+    }
+    CHECK(!exists(" \t "));
+    std::vector<Request> got = server.received();
+    CHECK_EQ(2u, got.size());
+    for (std::size_t i = 0; i < got.size(); ++i) {
+        CHECK_EQ(std::string("{\"application\":\"MyGame\",\"name\":\"startup\",\"tags\":{\"version\":\"1.2.3\"}}"),
+                 got[i].body);
+    }
+}
+
 static void anEventsOwnInstallTagWins() {
     StubServer server;
     trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k", trace_client::InstallId::of("configured"));
@@ -1906,6 +1929,7 @@ int main() {
         {"aDisabledClientNeverMakesUpOrWritesAnInstallId", aDisabledClientNeverMakesUpOrWritesAnInstallId},
         {"anExplicitInstallIdIsTrimmedAndWinsOverTheFile", anExplicitInstallIdIsTrimmedAndWinsOverTheFile},
         {"aBlankInstallIdMeansNoneAndAnOverlongOneIsRejected", aBlankInstallIdMeansNoneAndAnOverlongOneIsRejected},
+        {"aBlankInstallIdFileMeansNone", aBlankInstallIdFileMeansNone},
         {"anEventsOwnInstallTagWins", anEventsOwnInstallTagWins},
         {"theInstallTagNeverPassesTheTagCap", theInstallTagNeverPassesTheTagCap},
         {"onlyA201IsSuccess", onlyA201IsSuccess},
