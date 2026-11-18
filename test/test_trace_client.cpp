@@ -815,6 +815,7 @@ static void jsonIsEscapedAndCleaned() {
     // NaN and infinities are not JSON numbers; they are left out.
     CHECK_EQ(std::string("{\"application\":\"A\",\"name\":\"n\"}"), json("A", "n", true, std::nan(""), {}));
     CHECK_EQ(std::string("{\"application\":\"A\",\"name\":\"n\"}"), json("A", "n", true, HUGE_VAL, {}));
+    CHECK_EQ(std::string("{\"application\":\"A\",\"name\":\"n\"}"), json("A", "n", true, -HUGE_VAL, {}));
     CHECK_EQ(std::string("{\"application\":\"A\",\"name\":\"n\",\"value\":0.1}"), json("A", "n", true, 0.1, {}));
     CHECK_EQ(std::string("{\"application\":\"A\",\"name\":\"n\",\"value\":-3}"), json("A", "n", true, -3.0, {}));
     // UTF-8 passes through; invalid bytes become U+FFFD instead of costing the report.
@@ -843,6 +844,36 @@ static void tagsAreHeldToTheServerLimits() {
     for (int i = 0; i < 200; ++i) accents += "\xC3\xA9";
     std::string cut = trace_client::detail::cleanUtf8(accents, 255);
     CHECK_EQ(254u, cut.size());
+}
+
+static void tagKeysAreCutAndCleanedLikeNamesAndValues() {
+    using trace_client::detail::json;
+    std::string body = json("A", "n", false, 0, {{std::string(300, 'k'), "v"}});
+    CHECK(body.find("\"" + std::string(255, 'k') + "\":\"v\"") != std::string::npos);
+    CHECK(body.find(std::string(256, 'k')) == std::string::npos);
+    // A key is cut at a character boundary too: 127 two-byte characters, not 127 and a half.
+    std::string accents;
+    for (int i = 0; i < 200; ++i) accents += "\xC3\xA9";
+    body = json("A", "n", false, 0, {{accents, "v"}});
+    CHECK(body.find("\"" + accents.substr(0, 254) + "\":\"v\"") != std::string::npos);
+    // Invalid UTF-8 in a key or a value becomes U+FFFD, as in a name.
+    CHECK_EQ(std::string("{\"application\":\"A\",\"name\":\"n\",\"tags\":{\"bad\xEF\xBF\xBDkey\":\"bad\xEF\xBF\xBDvalue\"}}"),
+             json("A", "n", false, 0, {{"bad\xFFkey", "bad\xFEvalue"}}));
+}
+
+static void blankTagKeysDoNotCountTowardTheTagCap() {
+    using trace_client::detail::json;
+    // The blank keys sort first; were they counted, only 29 real tags would fit.
+    trace_client::Tags tags;
+    tags[""] = "x";
+    tags["\t"] = "x";
+    tags[" "] = "x";
+    for (int i = 0; i < 32; ++i) tags["k" + std::to_string(100 + i)] = "v";
+    std::string body = json("A", "n", false, 0, tags);
+    std::size_t count = 0;
+    for (std::size_t at = body.find("\"k1"); at != std::string::npos; at = body.find("\"k1", at + 1)) ++count;
+    CHECK_EQ(trace_client::MAX_TAGS, count);
+    CHECK(body.find("\"x\"") == std::string::npos);
 }
 
 static void cleanUtf8ReplacesEveryMalformedSequence() {
@@ -1893,6 +1924,8 @@ int main() {
         {"aBlankNameIsNeverMentionedToTheLogger", aBlankNameIsNeverMentionedToTheLogger},
         {"jsonIsEscapedAndCleaned", jsonIsEscapedAndCleaned},
         {"tagsAreHeldToTheServerLimits", tagsAreHeldToTheServerLimits},
+        {"tagKeysAreCutAndCleanedLikeNamesAndValues", tagKeysAreCutAndCleanedLikeNamesAndValues},
+        {"blankTagKeysDoNotCountTowardTheTagCap", blankTagKeysDoNotCountTowardTheTagCap},
         {"cleanUtf8ReplacesEveryMalformedSequence", cleanUtf8ReplacesEveryMalformedSequence},
         {"cleanUtf8NeverExceedsTheByteLimit", cleanUtf8NeverExceedsTheByteLimit},
         {"quoteEscapesWhatJsonRequiresAndPassesTheRestThrough", quoteEscapesWhatJsonRequiresAndPassesTheRestThrough},
