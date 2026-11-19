@@ -687,7 +687,8 @@ static void disabledReasonIsEmptyWhenTheClientReports() {
 
 static void environmentOptOutsDisableForEveryAcceptedValue() {
     StubServer server;
-    const char *off[] = {"off", "OFF", "false", "0", "no", " No "};
+    // Fails closed: anything but blank or a clear "on" is an opt-out.
+    const char *off[] = {"off", "OFF", "false", "0", "no", " No ", "maybe", "disabled", "of", "\"on\"", "2"};
     for (std::size_t i = 0; i < sizeof off / sizeof off[0]; ++i) {
         cleanEnvironment();
         setEnv("TRACE_USAGE_REPORTING", off[i]);
@@ -696,7 +697,8 @@ static void environmentOptOutsDisableForEveryAcceptedValue() {
         CHECK_EQ(std::string("environment"), client.disabledReason());
         client.report("startup");
     }
-    const char *dnt[] = {"1", "true", "TRUE", "yes"};
+    // Fails closed: anything but blank or a clear "no" is an opt-out.
+    const char *dnt[] = {"1", "true", "TRUE", "yes", " Yes ", "on", "y", "2", "nope"};
     for (std::size_t i = 0; i < sizeof dnt / sizeof dnt[0]; ++i) {
         cleanEnvironment();
         setEnv("DO_NOT_TRACK", dnt[i]);
@@ -709,17 +711,60 @@ static void environmentOptOutsDisableForEveryAcceptedValue() {
     CHECK_EQ(0u, server.received().size());
 }
 
-static void otherEnvironmentValuesLeaveTheProgramSettingInCharge() {
+static void blankOrClearlyOnEnvironmentValuesLeaveTheProgramSettingInCharge() {
     StubServer server;
-    const char *values[] = {"on", "true", "1", "", "maybe"};
+    const char *values[] = {"on", "true", "1", "", "  ", " TRUE ", "Yes"};
+    const char *dnt[] = {"0", "false", "", " OFF ", "No"};
     for (std::size_t i = 0; i < sizeof values / sizeof values[0]; ++i) {
-        cleanEnvironment();
-        setEnv("TRACE_USAGE_REPORTING", values[i]);
-        setEnv("DO_NOT_TRACK", i == 0 ? "0" : "false");
-        trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k");
-        CHECK(client.isEnabled());
+        for (std::size_t j = 0; j < sizeof dnt / sizeof dnt[0]; ++j) {
+            cleanEnvironment();
+            setEnv("TRACE_USAGE_REPORTING", values[i]);
+            setEnv("DO_NOT_TRACK", dnt[j]);
+            CHECK(!trace_client::environmentOptsOut());
+            trace_client::TraceClient client(server.baseUrl(), "MyGame", "1.2.3", "k");
+            CHECK(client.isEnabled());
+        }
     }
     cleanEnvironment();
+}
+
+static void allowsReportingIsTrueOnlyForAClearOn() {
+    CHECK(trace_client::allowsReporting(true));
+    CHECK(trace_client::allowsReporting("true"));
+    CHECK(trace_client::allowsReporting("TRUE"));
+    CHECK(trace_client::allowsReporting(" on "));
+    CHECK(trace_client::allowsReporting("Yes"));
+    CHECK(trace_client::allowsReporting("1"));
+    CHECK(trace_client::allowsReporting(std::string("on")));
+    std::string owned("yes");
+    CHECK(trace_client::allowsReporting(owned));
+    char mutableText[] = "true";
+    char *mutablePointer = mutableText;
+    CHECK(trace_client::allowsReporting(mutablePointer));
+}
+
+static void allowsReportingFailsClosedForEverythingElse() {
+    CHECK(!trace_client::allowsReporting(false));
+    CHECK(!trace_client::allowsReporting("false"));
+    CHECK(!trace_client::allowsReporting("\"false\""));
+    CHECK(!trace_client::allowsReporting("\"true\""));
+    CHECK(!trace_client::allowsReporting("off"));
+    CHECK(!trace_client::allowsReporting("no"));
+    CHECK(!trace_client::allowsReporting("0"));
+    CHECK(!trace_client::allowsReporting(""));
+    CHECK(!trace_client::allowsReporting("   "));
+    CHECK(!trace_client::allowsReporting("ture"));
+    CHECK(!trace_client::allowsReporting("enabled"));
+    CHECK(!trace_client::allowsReporting(std::string("off")));
+    CHECK(!trace_client::allowsReporting(static_cast<const char *>(NULL)));
+    CHECK(!trace_client::allowsReporting(nullptr));
+    CHECK(!trace_client::allowsReporting(1));
+    CHECK(!trace_client::allowsReporting(0));
+    CHECK(!trace_client::allowsReporting(1.0));
+    trace_client::TraceClient client("http://127.0.0.1:9", "MyGame", "1.2.3", "k",
+                                     trace_client::allowsReporting("\"false\""));
+    CHECK(!client.isEnabled());
+    CHECK_EQ(std::string("config"), client.disabledReason());
 }
 
 static void environmentWinsOverTheConfigFlagAndTheKey() {
@@ -1914,7 +1959,9 @@ int main() {
         {"disabledClientSendsNothing", disabledClientSendsNothing},
         {"disabledReasonIsEmptyWhenTheClientReports", disabledReasonIsEmptyWhenTheClientReports},
         {"environmentOptOutsDisableForEveryAcceptedValue", environmentOptOutsDisableForEveryAcceptedValue},
-        {"otherEnvironmentValuesLeaveTheProgramSettingInCharge", otherEnvironmentValuesLeaveTheProgramSettingInCharge},
+        {"blankOrClearlyOnEnvironmentValuesLeaveTheProgramSettingInCharge", blankOrClearlyOnEnvironmentValuesLeaveTheProgramSettingInCharge},
+        {"allowsReportingIsTrueOnlyForAClearOn", allowsReportingIsTrueOnlyForAClearOn},
+        {"allowsReportingFailsClosedForEverythingElse", allowsReportingFailsClosedForEverythingElse},
         {"environmentWinsOverTheConfigFlagAndTheKey", environmentWinsOverTheConfigFlagAndTheKey},
         {"doNotTrackOptsOutWhateverTraceUsageReportingSays", doNotTrackOptsOutWhateverTraceUsageReportingSays},
         {"disabledReasonIsTheFirstOptOutThatApplies", disabledReasonIsTheFirstOptOutThatApplies},

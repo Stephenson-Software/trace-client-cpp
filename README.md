@@ -16,7 +16,7 @@ all three speak the same wire format and make the same promises.
 trace_client::TraceClient trace("https://trace.danielstephenson.dev", "MyGame",
                                 MYGAME_VERSION, // the program's own version, e.g. "1.4.0"
                                 settings.usageReportingKey,
-                                settings.usageReportingEnabled);
+                                trace_client::allowsReporting(settings.usageReportingEnabled));
 trace.report("startup");
 trace.report("level-complete", 3.0, {{"level", "forest"}});
 
@@ -64,7 +64,7 @@ written anywhere and no `install` tag is sent.
 trace_client::TraceClient trace("https://trace.danielstephenson.dev", "MyGame",
                                 MYGAME_VERSION, settings.usageReportingKey,
                                 trace_client::InstallId::fromFile(saveDirectory + "/trace-install-id"),
-                                settings.usageReportingEnabled);
+                                trace_client::allowsReporting(settings.usageReportingEnabled));
 ```
 
 `TraceClient::installIdFromFile(path)` does the work: the first line of the
@@ -108,19 +108,28 @@ client never generates one, never reads or writes the file, and sends nothing.
 
 ## Turning it off
 
-Reporting is **opt-out**. Any one of these yields a client that does nothing,
-starts no thread and costs nothing; the first that applies is the reason:
+Reporting is **opt-out**, and **every switch fails closed:** a value that
+does not clearly mean "on" — a typo, a quoted `"false"`, an empty value —
+turns reporting off, and nothing in this client ever turns a switch back on.
+Any one of these yields a client that does nothing, starts no thread and costs
+nothing; the first that applies is the reason:
 
-- **Environment, for every trace-reporting program at once:**
-  `TRACE_USAGE_REPORTING=off` (also `false`, `0`, `no`; case-insensitive) or
-  `DO_NOT_TRACK=1` (also `true`, `yes`; the
-  [consoledonottrack.com](https://consoledonottrack.com) convention). The
-  constructor checks these before anything else, so they win over the
-  program's own setting. Any other value, or an unset variable, leaves that
-  setting in charge. `trace_client::environmentOptsOut()` answers the same
-  question on its own.
+- **Environment, for every trace-reporting program at once** (case-insensitive,
+  trimmed): `TRACE_USAGE_REPORTING` set to anything but blank, `true`, `on`,
+  `yes` or `1` (so `off`, `false`, `0`, `no`, `disabled`, a typo, …); or
+  `DO_NOT_TRACK` set to anything but blank, `0`, `false`, `off` or `no` (so
+  `1`, `true`, `yes`, …; the
+  [consoledonottrack.com](https://consoledonottrack.com) convention). An
+  environment that cannot be read counts as opting out. The constructor checks
+  these before anything else, so they win over the program's own setting; an
+  unset or blank variable leaves that setting in charge.
+  `trace_client::environmentOptsOut()` answers the same question on its own.
 - **The program's own setting:** `enabled = false` (the constructor argument
-  after the key, or after the `InstallId`).
+  after the key, or after the `InstallId`). Read it with
+  `trace_client::allowsReporting(value)`, which fails closed the same way: only
+  `true`, or a string (`std::string` or `const char *`) reading `true`, `on`,
+  `yes` or `1` (any case, trimmed), allows reporting; `false`, a quoted
+  `"false"`, a typo, a null pointer, a number or any other type turns it off.
 - **No key** (or a blank one).
 
 `client.disabledReason()` says which one applied — `"environment"`, `"config"`
@@ -211,7 +220,7 @@ The executable can be overridden before the include, e.g.
 
 `POST {baseUrl}/api/metrics` with `Authorization: Bearer <key>`,
 `Content-Type: application/json; charset=utf-8`,
-`User-Agent: trace-client-cpp/0.3.0 (<application>)` and a body of
+`User-Agent: trace-client-cpp/0.4.0 (<application>)` and a body of
 
 ```json
 {"application":"MyGame","name":"command","tags":{"install":"0f8b6c1e-3a52-4c8e-9a0d-6e2f1b7c4d90","name":"home","version":"1.4.0"}}

@@ -1,5 +1,5 @@
 /*
- * trace-client 0.3.0 (C++) -- https://github.com/Stephenson-Software/trace-client-cpp
+ * trace-client 0.4.0 (C++) -- https://github.com/Stephenson-Software/trace-client-cpp
  *
  * One call to report that a program was used. Copy this header into a project
  * as is; there is nothing else to add. C++11 or later, no library to link
@@ -10,7 +10,7 @@
 #ifndef TRACE_CLIENT_HPP
 #define TRACE_CLIENT_HPP
 
-#define TRACE_CLIENT_VERSION "0.3.0"
+#define TRACE_CLIENT_VERSION "0.4.0"
 
 // The executable that carries a report over HTTPS: the system's own curl
 // (shipped with macOS, with Windows 10 1803 and later, and with nearly every
@@ -906,18 +906,73 @@ inline void drain(std::shared_ptr<Shared> shared) {
 
 } // namespace detail
 
+namespace detail {
+
+/** true, on, yes or 1, ignoring case and surrounding space. */
+inline bool isOn(const std::string &value) {
+    std::string v = trimLower(value);
+    return v == "true" || v == "on" || v == "yes" || v == "1";
+}
+
+/** false, off, no or 0, ignoring case and surrounding space. */
+inline bool isNegative(const std::string &value) {
+    std::string v = trimLower(value);
+    return v == "false" || v == "off" || v == "no" || v == "0";
+}
+
+} // namespace detail
+
 /**
- * Whether the environment asks for usage reporting to be off, via
- * TRACE_USAGE_REPORTING=off (also false, 0, no) or DO_NOT_TRACK=1 (also true,
- * yes), case-insensitive. Any other value, or none, leaves the program's own
- * setting in charge.
+ * Whether the environment asks for usage reporting to be off. Fails closed:
+ * TRACE_USAGE_REPORTING set to anything but blank, true, on, yes or 1 (so off,
+ * false, 0, no, a typo, ...), or DO_NOT_TRACK set to anything but blank, 0,
+ * false, off or no (so 1, true, yes, ...), case-insensitive and trimmed, turns
+ * reporting off. An environment that cannot be read counts as opting out too.
+ * Unset or blank variables leave the program's own setting in charge. Never
+ * throws.
  */
 inline bool environmentOptsOut() {
-    std::string reporting = detail::trimLower(detail::getEnvironment(ENV_TRACE_USAGE_REPORTING));
-    if (reporting == "off" || reporting == "false" || reporting == "0" || reporting == "no") return true;
-    std::string dnt = detail::trimLower(detail::getEnvironment(ENV_DO_NOT_TRACK));
-    return dnt == "1" || dnt == "true" || dnt == "yes";
+    try {
+        std::string reporting = detail::getEnvironment(ENV_TRACE_USAGE_REPORTING);
+        if (!detail::isBlank(reporting) && !detail::isOn(reporting)) return true;
+        std::string dnt = detail::getEnvironment(ENV_DO_NOT_TRACK);
+        return !detail::isBlank(dnt) && !detail::isNegative(dnt);
+    } catch (...) {
+        return true; // an environment that cannot be read may say DO_NOT_TRACK=1
+    }
 }
+
+/**
+ * Whether a program's own reporting setting, as read from its configuration,
+ * allows reporting -- for the constructor's enabled argument. Fails closed:
+ * only true, or a string reading true, on, yes or 1 (any case, surrounding
+ * space ignored), allows it. Anything else turns reporting off: false, a
+ * quoted "false", off, no, a typo, a null char pointer, a number, or any
+ * other type. Never throws.
+ *
+ *     bool enabled = trace_client::allowsReporting(settings.get("usage-reporting.enabled"));
+ */
+inline bool allowsReporting(bool setting) { return setting; }
+
+inline bool allowsReporting(const std::string &setting) {
+    try {
+        return detail::isOn(setting);
+    } catch (...) {
+        return false;
+    }
+}
+
+inline bool allowsReporting(const char *setting) {
+    return setting != NULL && allowsReporting(std::string(setting));
+}
+
+inline bool allowsReporting(char *setting) {
+    return allowsReporting(static_cast<const char *>(setting));
+}
+
+/** Any other type -- a number, a null pointer, a struct -- is not a clear "on". */
+template <typename T>
+inline bool allowsReporting(const T &) { return false; }
 
 /**
  * Where an installation's ID comes from, for the constructor that takes one.
@@ -956,10 +1011,14 @@ struct InstallId {
  *   TIMEOUT_SECONDS in total, then stops -- a CLI that reports and exits at
  *   once still sends, and an unreachable server never hangs the exit.
  *
- * Reporting is opt-out. The constructor decides once, first match wins, and
- * disabledReason() says which: the environment (REASON_ENVIRONMENT), the
- * program's own setting (REASON_CONFIG), a blank key (REASON_NO_KEY), or no
- * way to send (REASON_UNAVAILABLE).
+ * Reporting is opt-out. Every switch fails closed: a value that does not
+ * clearly mean "on" -- a typo, a quoted "false", an empty value -- turns
+ * reporting off, and nothing in this client ever turns a switch back on. The
+ * constructor decides once, first match wins, and disabledReason() says
+ * which: the environment (REASON_ENVIRONMENT; see environmentOptsOut), the
+ * program's own setting (REASON_CONFIG; read it with allowsReporting so it
+ * fails closed too), a blank key (REASON_NO_KEY), or no way to send
+ * (REASON_UNAVAILABLE).
  *
  * Every event carries the program's own version as the tag "version" -- the
  * third argument to the constructor, required, so a "command" event can be
@@ -980,7 +1039,7 @@ struct InstallId {
  *     trace_client::TraceClient trace("https://trace.example.org", "MyGame", MYGAME_VERSION,
  *                                     settings.key,
  *                                     trace_client::InstallId::fromFile(dataDir + "/trace-install-id"),
- *                                     settings.usageReporting);
+ *                                     trace_client::allowsReporting(settings.usageReporting));
  *     trace.report("startup");
  *     ...
  *     trace.close(); // or let the destructor do it
