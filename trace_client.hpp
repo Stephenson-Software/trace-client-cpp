@@ -114,7 +114,11 @@ static const char *const ENV_DO_NOT_TRACK = "DO_NOT_TRACK";
 static const char *const REASON_ENVIRONMENT = "environment";
 static const char *const REASON_CONFIG = "config";
 static const char *const REASON_NO_KEY = "no key";
-/** No way to send on this platform, or the client could not start its thread. */
+/**
+ * The client cannot send at all: no way to send on this platform, a blank
+ * base URL, application or version, a version or explicit installation ID
+ * longer than MAX_LENGTH bytes, or the client could not start its thread.
+ */
 static const char *const REASON_UNAVAILABLE = "unavailable";
 
 namespace detail {
@@ -1017,7 +1021,8 @@ struct InstallId {
  * constructor decides once, first match wins, and disabledReason() says
  * which: the environment (REASON_ENVIRONMENT; see environmentOptsOut), the
  * program's own setting (REASON_CONFIG; read it with allowsReporting so it
- * fails closed too), a blank key (REASON_NO_KEY), or no way to send
+ * fails closed too), a blank key (REASON_NO_KEY), or no way to send -- the
+ * platform, a blank or overlong argument, or a thread that would not start
  * (REASON_UNAVAILABLE).
  *
  * Every event carries the program's own version as the tag "version" -- the
