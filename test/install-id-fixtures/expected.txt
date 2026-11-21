@@ -1,0 +1,26 @@
+# The install-ID file loader's released behaviour, one line per fixture file in this directory.
+#   <file> loaded <id>  installIdFromFile returns exactly <id> and leaves the file untouched.
+#   <file> replaced     the file holds no ID, so a fresh lowercase uuid4 plus "\n" is written and returned.
+#   <file> kept         the file cannot be read, so it is left byte-identical and a fresh uuid4 is
+#                       returned for this process only.
+# Lines marked loaded or kept, and the fixture files, must never change once released.
+bad-chars.id replaced
+bom.id replaced
+comment-first.id loaded real-id
+created.id loaded 3f2b8c1e-7a4d-4e6f-9b2a-5c8d1e0f7a6b
+crlf.id loaded crlf-id
+empty.id replaced
+first-of-two.id loaded first-id
+id-then-not-utf8.id loaded good-id
+invalid-lines-first.id loaded third.is-valid
+leading-blank-lines.id loaded after-blanks
+max-length.id loaded aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+non-ascii.id replaced
+not-utf8.id replaced
+padded.id loaded padded-id
+plain.id loaded plain-id
+tabs.id loaded tabbed_id
+too-long.id replaced
+trailing-newline.id loaded with.newline_1
+uppercase-uuid.id loaded 0F8FAD5B-D9CB-469F-A165-70867728950E
+whitespace-only.id replaced

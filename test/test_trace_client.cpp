@@ -18,6 +18,7 @@
 #include <mutex>
 #include <new>
 #include <condition_variable>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -31,6 +32,7 @@ typedef SOCKET socket_t;
 static const socket_t NO_SOCKET = INVALID_SOCKET;
 #else
 #include <arpa/inet.h>
+#include <dirent.h>
 #include <netinet/in.h>
 #include <sys/select.h>
 #include <sys/socket.h>
@@ -1572,6 +1574,177 @@ static void installIdFromFileFallsBackToMemoryWhenThePathIsUnusable() {
     removeDirectory(base);
 }
 
+// ---------------------------------------------------------------- install-ID fixtures
+
+// The repository's own directory, so the fixtures are found from wherever the
+// tests run (MSVC runs them from build\Release). The Makefile and
+// CMakeLists.txt both define it; "." is the repository root make runs from.
+#if !defined(TRACE_CLIENT_SOURCE_DIR)
+#define TRACE_CLIENT_SOURCE_DIR "."
+#endif
+
+static std::string sourcePath(const std::string &relative) {
+    return std::string(TRACE_CLIENT_SOURCE_DIR) + "/" + relative;
+}
+
+/** The names of the regular files in directory that end in suffix, sorted. */
+static std::vector<std::string> filesEndingIn(const std::string &directory, const std::string &suffix) {
+    std::vector<std::string> names;
+#if defined(_WIN32)
+    WIN32_FIND_DATAA entry;
+    HANDLE search = FindFirstFileA((directory + "/*").c_str(), &entry);
+    if (search != INVALID_HANDLE_VALUE) {
+        do {
+            if (!(entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) names.push_back(entry.cFileName);
+        } while (FindNextFileA(search, &entry));
+        FindClose(search);
+    }
+#else
+    DIR *dir = opendir(directory.c_str());
+    if (dir) {
+        while (struct dirent *entry = readdir(dir)) {
+            std::string name = entry->d_name;
+            if (trace_client::detail::pathKind(directory + "/" + name) == trace_client::detail::PATH_FILE) {
+                names.push_back(name);
+            }
+        }
+        closedir(dir);
+    }
+#endif
+    std::vector<std::string> matching;
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        const std::string &name = names[i];
+        if (name.size() > suffix.size() && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0) {
+            matching.push_back(name);
+        }
+    }
+    std::sort(matching.begin(), matching.end());
+    return matching;
+}
+
+/**
+ * Every ID file a release shipped in test/install-id-fixtures still loads the
+ * way test/install-id-fixtures/expected.txt says it did: "loaded <id>" returns
+ * exactly that ID and leaves the file alone, "replaced" writes a fresh
+ * lower-case UUID plus "\n" and returns it, "kept" leaves the file
+ * byte-identical and returns a fresh UUID for this process only. Released
+ * fixtures and their loaded/kept lines are frozen; a new case is a new
+ * fixture plus its own line.
+ */
+static void installIdFixturesLoadAsReleased() {
+    const std::string fixtures = sourcePath("test/install-id-fixtures");
+    std::ifstream expected((fixtures + "/expected.txt").c_str(), std::ios::in | std::ios::binary);
+    CHECK(static_cast<bool>(expected));
+    std::vector<std::string> named;
+    std::string line;
+    while (std::getline(expected, line)) {
+        if (!line.empty() && line[line.size() - 1] == '\r') line.erase(line.size() - 1);
+        if (trace_client::detail::isBlank(line) || line[0] == '#') continue;
+        std::istringstream fields(line);
+        std::string file, outcome, id, extra;
+        fields >> file >> outcome;
+        if (outcome == "loaded") fields >> id;
+        bool wellFormed = !file.empty() && (outcome == "loaded" ? !id.empty() : outcome == "replaced" || outcome == "kept")
+            && !(fields >> extra);
+        if (!wellFormed) {
+            CHECK_EQ(std::string("<file> loaded <id> | <file> replaced | <file> kept"), line);
+            continue;
+        }
+        named.push_back(file);
+
+        const std::string original = readFile(fixtures + "/" + file);
+        const std::string base = tempBase();
+        const std::string path = base + "/" + file;
+        writeFile(path, original);
+        CHECK_EQ(original, readFile(path));
+        const std::string result = trace_client::TraceClient::installIdFromFile(path);
+        const std::string after = readFile(path);
+        if (outcome == "loaded") {
+            if (result != id) std::cerr << "  " << file << ":" << std::endl;
+            CHECK_EQ(id, result);
+            CHECK(after == original);
+        } else if (outcome == "replaced") {
+            if (!isUuid(result) || after != result + "\n") std::cerr << "  " << file << ":" << std::endl;
+            CHECK(isUuid(result));
+            CHECK_EQ(result + "\n", after);
+        } else {
+            if (!isUuid(result) || after != original) std::cerr << "  " << file << ":" << std::endl;
+            CHECK(isUuid(result));
+            CHECK(after == original);
+            CHECK(original.find(result) == std::string::npos);
+        }
+        std::remove(path.c_str());
+        removeDirectory(base);
+    }
+    std::sort(named.begin(), named.end());
+    // expected.txt names every fixture, and only fixtures that are there.
+    std::vector<std::string> present = filesEndingIn(fixtures, ".id");
+    CHECK(!present.empty());
+    CHECK(named == present);
+    if (named != present) {
+        for (std::size_t i = 0; i < present.size(); ++i) {
+            if (std::find(named.begin(), named.end(), present[i]) == named.end()) {
+                std::cerr << "  " << present[i] << " has no line in expected.txt" << std::endl;
+            }
+        }
+        for (std::size_t i = 0; i < named.size(); ++i) {
+            if (std::find(present.begin(), present.end(), named[i]) == present.end()) {
+                std::cerr << "  " << named[i] << " in expected.txt is not a fixture (or is named twice)" << std::endl;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- version consistency
+
+/**
+ * Every version between prefix and suffix in text, where the version is
+ * characters of [0-9A-Za-z.+-]; other text after prefix is not a match.
+ */
+static std::vector<std::string> versionsBetween(const std::string &text, const std::string &prefix,
+                                                const std::string &suffix) {
+    std::vector<std::string> found;
+    for (std::size_t at = text.find(prefix); at != std::string::npos; at = text.find(prefix, at + 1)) {
+        std::size_t begin = at + prefix.size(), end = begin;
+        while (end < text.size() && (std::isalnum(static_cast<unsigned char>(text[end])) || text[end] == '.'
+                                     || text[end] == '+' || text[end] == '-')) {
+            ++end;
+        }
+        if (end > begin && text.compare(end, suffix.size(), suffix) == 0) found.push_back(text.substr(begin, end - begin));
+    }
+    return found;
+}
+
+/**
+ * The version CMakeLists.txt gives the project is the one written everywhere
+ * else -- the header's banner and TRACE_CLIENT_VERSION, and the README's
+ * User-Agent -- each exactly once, so a release bumps them together.
+ */
+static void theVersionIsTheSameEverywhere() {
+    std::vector<std::string> build =
+        versionsBetween(readFile(sourcePath("CMakeLists.txt")), "project(trace_client_cpp VERSION ", " ");
+    CHECK_EQ(1u, build.size());
+    if (build.size() != 1) return;
+    const std::string version = build[0];
+    const std::string header = readFile(sourcePath("trace_client.hpp"));
+    const std::string readme = readFile(sourcePath("README.md"));
+    struct Spot { const char *file; const std::string *text; const char *prefix; const char *suffix; };
+    const Spot spots[] = {
+        {"trace_client.hpp", &header, "trace-client ", " (C++) --"},
+        {"trace_client.hpp", &header, "#define TRACE_CLIENT_VERSION \"", "\""},
+        {"README.md", &readme, "trace-client-cpp/", " ("},
+    };
+    for (std::size_t i = 0; i < sizeof spots / sizeof spots[0]; ++i) {
+        std::vector<std::string> found = versionsBetween(*spots[i].text, spots[i].prefix, spots[i].suffix);
+        if (found.size() != 1 || found[0] != version) {
+            std::cerr << "  " << spots[i].file << ": " << spots[i].prefix << "X" << spots[i].suffix << std::endl;
+        }
+        CHECK_EQ(1u, found.size());
+        for (std::size_t j = 0; j < found.size(); ++j) CHECK_EQ(version, found[j]);
+    }
+    CHECK_EQ(version, std::string(TRACE_CLIENT_VERSION));
+}
+
 static void everyEventCarriesTheInstallIdFromTheFile() {
     StubServer server;
     std::string base = tempBase();
@@ -2005,6 +2178,8 @@ int main() {
         {"installIdFromFilePersistsOnceAndReusesIt", installIdFromFilePersistsOnceAndReusesIt},
         {"installIdFromFileReadsTheFirstValidLine", installIdFromFileReadsTheFirstValidLine},
         {"installIdFromFileFallsBackToMemoryWhenThePathIsUnusable", installIdFromFileFallsBackToMemoryWhenThePathIsUnusable},
+        {"installIdFixturesLoadAsReleased", installIdFixturesLoadAsReleased},
+        {"theVersionIsTheSameEverywhere", theVersionIsTheSameEverywhere},
         {"everyEventCarriesTheInstallIdFromTheFile", everyEventCarriesTheInstallIdFromTheFile},
         {"aDisabledClientNeverMakesUpOrWritesAnInstallId", aDisabledClientNeverMakesUpOrWritesAnInstallId},
         {"anExplicitInstallIdIsTrimmedAndWinsOverTheFile", anExplicitInstallIdIsTrimmedAndWinsOverTheFile},
