@@ -256,6 +256,10 @@ and 20; libcurl; ThreadSanitizer, and AddressSanitizer with
 UndefinedBehaviorSanitizer), macOS and Windows
 (MSVC with the system `curl.exe`).
 
+The ID files in `test/install-id-fixtures` are frozen once released: each must
+keep loading as its line in `expected.txt` says. Never edit or delete one; a
+new case is a new fixture plus its own `expected.txt` line.
+
 ## License
 
 MIT.

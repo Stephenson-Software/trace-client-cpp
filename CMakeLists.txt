@@ -9,6 +9,9 @@ find_package(Threads REQUIRED)
 
 add_executable(test_trace_client test/test_trace_client.cpp)
 target_link_libraries(test_trace_client Threads::Threads)
+# The tests read test/install-id-fixtures and the version spots from here,
+# wherever they run from (MSVC runs them from build/Release).
+target_compile_definitions(test_trace_client PRIVATE TRACE_CLIENT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 if(WIN32)
   target_link_libraries(test_trace_client ws2_32)
 endif()
