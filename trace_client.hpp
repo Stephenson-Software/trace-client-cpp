@@ -1,5 +1,5 @@
 /*
- * trace-client 0.4.0 (C++) -- https://github.com/Stephenson-Software/trace-client-cpp
+ * trace-client 0.4.1 (C++) -- https://github.com/Stephenson-Software/trace-client-cpp
  *
  * One call to report that a program was used. Copy this header into a project
  * as is; there is nothing else to add. C++11 or later, no library to link
@@ -10,7 +10,7 @@
 #ifndef TRACE_CLIENT_HPP
 #define TRACE_CLIENT_HPP
 
-#define TRACE_CLIENT_VERSION "0.4.0"
+#define TRACE_CLIENT_VERSION "0.4.1"
 
 // The executable that carries a report over HTTPS: the system's own curl
 // (shipped with macOS, with Windows 10 1803 and later, and with nearly every

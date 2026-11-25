@@ -220,7 +220,7 @@ The executable can be overridden before the include, e.g.
 
 `POST {baseUrl}/api/metrics` with `Authorization: Bearer <key>`,
 `Content-Type: application/json; charset=utf-8`,
-`User-Agent: trace-client-cpp/0.4.0 (<application>)` and a body of
+`User-Agent: trace-client-cpp/0.4.1 (<application>)` and a body of
 
 ```json
 {"application":"MyGame","name":"command","tags":{"install":"0f8b6c1e-3a52-4c8e-9a0d-6e2f1b7c4d90","name":"home","version":"1.4.0"}}
